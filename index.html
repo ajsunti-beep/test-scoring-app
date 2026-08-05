@@ -2918,10 +2918,12 @@ async function renderSummaryTab(){
               <button class="btn btn-outline" id="sigClearBtn">ล้างลายเซ็น</button>
             </div>
           ` : `
-            <input type="file" id="sigFileInput" accept="image/*" style="display:block;margin-bottom:10px;">
-            <p style="font-size:11.5px;color:var(--muted);margin:0 0 10px;">รองรับไฟล์รูปภาพ (JPG, PNG) ถ่ายรูปหรือเลือกจากคลังภาพก็ได้ ขนาดไม่เกิน 8MB</p>
-            <div id="sigFilePreviewWrap" style="border:1px solid var(--border);border-radius:8px;background:#fff;min-height:170px;display:flex;align-items:center;justify-content:center;padding:8px;">
-              <span style="color:var(--muted);font-size:13px;">ยังไม่ได้เลือกไฟล์</span>
+            <input type="file" id="sigFileInput" accept="image/*" style="display:none;">
+            <p style="font-size:11.5px;color:var(--muted);margin:0 0 10px;">รองรับไฟล์รูปภาพ (JPG, PNG) ถ่ายรูป เลือกจากคลังภาพ หรือลากไฟล์มาวางก็ได้ ขนาดไม่เกิน 8MB</p>
+            <div id="sigDropZone" style="border:2px dashed var(--border);border-radius:8px;background:#fff;min-height:170px;display:flex;align-items:center;justify-content:center;padding:8px;cursor:pointer;transition:border-color .15s,background .15s;">
+              <div id="sigFilePreviewWrap" style="text-align:center;">
+                <span style="color:var(--muted);font-size:13px;">แตะเพื่อเลือกไฟล์ หรือลากรูปมาวางตรงนี้</span>
+              </div>
             </div>
           `}
           <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
@@ -2937,25 +2939,52 @@ async function renderSummaryTab(){
           setupSignaturePad('sigCanvas');
           document.getElementById('sigClearBtn').onclick = ()=> clearSignaturePad('sigCanvas');
         } else {
-          document.getElementById('sigFileInput').onchange = async (e)=>{
-            const toast = document.getElementById('sigToast');
+          const fileInput = document.getElementById('sigFileInput');
+          const dropZone = document.getElementById('sigDropZone');
+          const previewWrap = document.getElementById('sigFilePreviewWrap');
+          const toast = document.getElementById('sigToast');
+          const handleFile = async (file)=>{
             toast.style.color = '';
             toast.textContent = '';
-            const file = e.target.files && e.target.files[0];
-            const previewWrap = document.getElementById('sigFilePreviewWrap');
             if(!file) return;
             previewWrap.innerHTML = `<span style="color:var(--muted);font-size:13px;">กำลังโหลดรูป...</span>`;
             try{
               uploadedDataUrl = await readImageFileToDataURL(file, 500);
-              previewWrap.innerHTML = `<img src="${uploadedDataUrl}" alt="ลายเซ็นที่แนบ" style="max-width:100%;max-height:220px;display:block;">`;
+              previewWrap.innerHTML = `<img src="${uploadedDataUrl}" alt="ลายเซ็นที่แนบ" style="max-width:100%;max-height:220px;display:block;margin:0 auto;">`;
             }catch(err){
               uploadedDataUrl = null;
-              previewWrap.innerHTML = `<span style="color:var(--muted);font-size:13px;">ยังไม่ได้เลือกไฟล์</span>`;
+              previewWrap.innerHTML = `<span style="color:var(--muted);font-size:13px;">แตะเพื่อเลือกไฟล์ หรือลากรูปมาวางตรงนี้</span>`;
               toast.style.color = 'var(--red)';
               if(err && err.code==='client/invalid-file-type') toast.textContent = 'กรุณาเลือกไฟล์รูปภาพเท่านั้น (JPG, PNG)';
               else if(err && err.code==='client/file-too-large') toast.textContent = 'ไฟล์ใหญ่เกินไป กรุณาเลือกไฟล์ไม่เกิน 8MB';
               else toast.textContent = 'ไม่สามารถอ่านไฟล์รูปภาพนี้ได้ กรุณาลองไฟล์อื่น';
             }
+          };
+          dropZone.onclick = ()=> fileInput.click();
+          fileInput.onchange = (e)=> handleFile(e.target.files && e.target.files[0]);
+          let dragCounter = 0;
+          dropZone.ondragover = (e)=>{ e.preventDefault(); };
+          dropZone.ondragenter = (e)=>{
+            e.preventDefault();
+            dragCounter++;
+            dropZone.style.borderColor = 'var(--gold)';
+            dropZone.style.background = 'var(--gold-light)';
+          };
+          dropZone.ondragleave = (e)=>{
+            e.preventDefault();
+            dragCounter = Math.max(0, dragCounter-1);
+            if(dragCounter===0){
+              dropZone.style.borderColor = 'var(--border)';
+              dropZone.style.background = '#fff';
+            }
+          };
+          dropZone.ondrop = (e)=>{
+            e.preventDefault();
+            dragCounter = 0;
+            dropZone.style.borderColor = 'var(--border)';
+            dropZone.style.background = '#fff';
+            const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+            if(file) handleFile(file);
           };
         }
         document.getElementById('sigConfirmBtn').onclick = async ()=>{
