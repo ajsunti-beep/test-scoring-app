@@ -1062,18 +1062,25 @@ async function saveJudgeNamesFor(groupId, names){
 /* PIN gate for judges opening their link directly (no login). Kept separate from
    judgeNames since it's a security control, not just display info. An empty PIN
    for a judge means "no PIN required" — keeps older links (issued before this
-   feature existed) working without forcing a PIN on everyone retroactively. */
+   feature existed) working without forcing a PIN on everyone retroactively.
+
+   PINs live in their own top-level Firestore collection (securePins), written as
+   real structured fields — NOT run through the generic storage.set() wrapper,
+   which stringifies everything into a single opaque "value" field. Security
+   Rules can only inspect real structured fields, not text buried inside a JSON
+   string, so this collection is what makes a rules-enforced PIN check possible
+   at all. Rules deny direct reads of this collection entirely. */
 function generatePin(){
   return String(Math.floor(1000 + Math.random()*9000));
 }
 async function loadJudgePinsFor(groupId){
   try{
-    const r = await storage.get(`judgePins:${groupId}`, true);
-    return r ? { 1:'',2:'',3:'', ...JSON.parse(r.value) } : { 1:'',2:'',3:'' };
+    const snap = await fsDb.collection('securePins').doc(groupId).get();
+    return snap.exists ? { 1:'',2:'',3:'', ...snap.data() } : { 1:'',2:'',3:'' };
   }catch(e){ return { 1:'',2:'',3:'' }; }
 }
 async function saveJudgePinsFor(groupId, pins){
-  await storage.set(`judgePins:${groupId}`, JSON.stringify(pins), true);
+  await fsDb.collection('securePins').doc(groupId).set({ '1': pins[1]||'', '2': pins[2]||'', '3': pins[3]||'' });
 }
 function isPinVerified(groupId, judge){
   try{ return sessionStorage.getItem(`pinOK:${groupId}:${judge}`) === '1'; }catch(e){ return false; }
@@ -1081,14 +1088,30 @@ function isPinVerified(groupId, judge){
 function markPinVerified(groupId, judge){
   try{ sessionStorage.setItem(`pinOK:${groupId}:${judge}`, '1'); }catch(e){}
 }
+/* Remembers the PIN the judge actually typed in this session (not just that it
+   was correct) so it can be re-sent as proof alongside the signature write —
+   Security Rules re-check it server-side against securePins before allowing
+   that write, so the check can't be bypassed by skipping the app's own UI. */
+let verifiedPinValue = {};
 async function loadJudgeSignaturesFor(groupId){
   try{
     const r = await storage.get(`judgeSignatures:${groupId}`, true);
     return r ? { 1:null,2:null,3:null, ...JSON.parse(r.value) } : { 1:null,2:null,3:null };
   }catch(e){ return { 1:null,2:null,3:null }; }
 }
-async function saveJudgeSignaturesFor(groupId, sigs){
-  await storage.set(`judgeSignatures:${groupId}`, JSON.stringify(sigs), true);
+async function saveJudgeSignaturesFor(groupId, sigs, pinAttempt){
+  if(pinAttempt && pinAttempt.judge){
+    // Attach the PIN the judge entered as a sibling field (not stringified) so
+    // Firestore Security Rules can verify it server-side against securePins
+    // before allowing this specific write through.
+    await fsDb.collection('kvstore').doc(`judgeSignatures:${groupId}`).set({
+      value: JSON.stringify(sigs),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      _pinCheck: { judge: String(pinAttempt.judge), pin: String(pinAttempt.pin || '') }
+    });
+  } else {
+    await storage.set(`judgeSignatures:${groupId}`, JSON.stringify(sigs), true);
+  }
 }
 async function loadCertifyApprovedFor(groupId){
   try{
@@ -2760,6 +2783,7 @@ function renderPinGate(){
     const val = input.value.trim();
     if(val === String(ctxJudgePins[lockedJudge])){
       markPinVerified(ctxGroupId, lockedJudge);
+      verifiedPinValue[`${ctxGroupId}:${lockedJudge}`] = val;
       renderApp();
     } else {
       errEl.textContent = 'รหัส PIN ไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง หรือติดต่อผู้จัดการแข่งขัน';
@@ -3386,12 +3410,13 @@ async function renderSummaryTab(){
           confirmBtn.textContent = 'กำลังบันทึก...';
           const prevSignatures = { ...ctxJudgeSignatures };
           ctxJudgeSignatures[ej] = { signature: dataUrl, at: Date.now() };
+          const pinAttempt = verifiedPinValue[`${ctxGroupId}:${ej}`] ? { judge: ej, pin: verifiedPinValue[`${ctxGroupId}:${ej}`] } : null;
           try{
             if(navigator.onLine === false){
               throw Object.assign(new Error('offline'), { code:'client/offline' });
             }
             await withTimeout(
-              saveJudgeSignaturesFor(ctxGroupId, ctxJudgeSignatures),
+              saveJudgeSignaturesFor(ctxGroupId, ctxJudgeSignatures, pinAttempt),
               15000,
               'การบันทึกใช้เวลานานเกินไป'
             );
