@@ -741,6 +741,7 @@ let visitorSelectedGroupId = null;
 let ctxGroupId = null;
 let ctxGroupName = '';
 let ctxJudgeNames = { 1:'', 2:'', 3:'' };
+let ctxJudgePins = { 1:'', 2:'', 3:'' };
 let ctxJudgeSignatures = { 1:null, 2:null, 3:null };
 let ctxCertifyApproved = false;
 let ctxWorks = [];
@@ -1005,6 +1006,28 @@ async function loadJudgeNamesFor(groupId){
 async function saveJudgeNamesFor(groupId, names){
   await storage.set(`judgeNames:${groupId}`, JSON.stringify(names), true);
 }
+/* PIN gate for judges opening their link directly (no login). Kept separate from
+   judgeNames since it's a security control, not just display info. An empty PIN
+   for a judge means "no PIN required" — keeps older links (issued before this
+   feature existed) working without forcing a PIN on everyone retroactively. */
+function generatePin(){
+  return String(Math.floor(1000 + Math.random()*9000));
+}
+async function loadJudgePinsFor(groupId){
+  try{
+    const r = await storage.get(`judgePins:${groupId}`, true);
+    return r ? { 1:'',2:'',3:'', ...JSON.parse(r.value) } : { 1:'',2:'',3:'' };
+  }catch(e){ return { 1:'',2:'',3:'' }; }
+}
+async function saveJudgePinsFor(groupId, pins){
+  await storage.set(`judgePins:${groupId}`, JSON.stringify(pins), true);
+}
+function isPinVerified(groupId, judge){
+  try{ return sessionStorage.getItem(`pinOK:${groupId}:${judge}`) === '1'; }catch(e){ return false; }
+}
+function markPinVerified(groupId, judge){
+  try{ sessionStorage.setItem(`pinOK:${groupId}:${judge}`, '1'); }catch(e){}
+}
 async function loadJudgeSignaturesFor(groupId){
   try{
     const r = await storage.get(`judgeSignatures:${groupId}`, true);
@@ -1219,6 +1242,7 @@ async function enterGroup(groupId, groupName){
   ctxGroupId = groupId;
   ctxGroupName = groupName;
   ctxJudgeNames = await loadJudgeNamesFor(groupId);
+  ctxJudgePins = await loadJudgePinsFor(groupId);
   ctxJudgeSignatures = await loadJudgeSignaturesFor(groupId);
   ctxCertifyApproved = await loadCertifyApprovedFor(groupId);
   ctxWorks = await loadWorksFor(groupId);
@@ -1426,6 +1450,10 @@ async function renderApp(){
     headerEl.style.display = '';
     renderIdentityBadge();
     const ej = effectiveJudge();
+    if(lockedJudge && ctxJudgePins[lockedJudge] && !isPinVerified(ctxGroupId, lockedJudge)){
+      renderPinGate();
+      return;
+    }
     if(!judgeSection){
       app.innerHTML = `
         <div class="judge-info-strip">${escapeHtml(judgeLabel(ej))}</div>
@@ -2311,8 +2339,13 @@ function renderJudgeNamesCard(){
     </div>
     <div class="link-row">
       <input type="text" readonly id="judgeLink${n}" value="${judgeLinkFor(ctxGroupId, n)}">
-      <button class="btn btn-outline" style="flex-shrink:0;" data-copy="${n}">คัดลอกลิงก์</button>
+      <button class="btn btn-outline" style="flex-shrink:0;" data-copy="${n}">คัดลอกลิงก์ + PIN</button>
       <button class="btn btn-outline" style="flex-shrink:0;" data-preview="${n}">ดูมุมมองนี้</button>
+    </div>
+    <div class="link-row" style="align-items:center;gap:10px;margin-top:6px;">
+      <span style="font-size:12.5px;color:var(--muted);">รหัส PIN สำหรับกรรมการ:</span>
+      <strong id="judgePinDisplay${n}" style="font-size:18px;letter-spacing:3px;color:var(--navy);">${escapeHtml(ctxJudgePins[n] || '—')}</strong>
+      <button class="btn btn-outline" style="flex-shrink:0;" data-regen="${n}">สุ่ม PIN ใหม่</button>
     </div>
   `).join('');
   JUDGES.forEach(n=>{
@@ -2324,12 +2357,25 @@ function renderJudgeNamesCard(){
     wrap.querySelector(`button[data-preview="${n}"]`).onclick = ()=>{
       enterPreview(n);
     };
+    wrap.querySelector(`button[data-regen="${n}"]`).onclick = async (e)=>{
+      ctxJudgePins[n] = generatePin();
+      await saveJudgePinsFor(ctxGroupId, ctxJudgePins);
+      document.getElementById(`judgePinDisplay${n}`).textContent = ctxJudgePins[n];
+      const btn = e.currentTarget;
+      const original = btn.textContent;
+      btn.textContent = 'สุ่มใหม่แล้ว ✓';
+      setTimeout(()=>{ btn.textContent = original; }, 1400);
+    };
     wrap.querySelector(`button[data-copy="${n}"]`).onclick = async (e)=>{
       const link = judgeLinkFor(ctxGroupId, n);
+      const pin = ctxJudgePins[n];
+      const text = pin
+        ? `ลิงก์สำหรับให้คะแนน: ${link}\nรหัส PIN: ${pin}`
+        : link;
       const btn = e.currentTarget;
       const original = btn.textContent;
       try{
-        await navigator.clipboard.writeText(link);
+        await navigator.clipboard.writeText(text);
         btn.textContent = 'คัดลอกแล้ว';
       }catch(err){
         const input = document.getElementById(`judgeLink${n}`);
@@ -2339,6 +2385,18 @@ function renderJudgeNamesCard(){
       setTimeout(()=>{ btn.textContent = original; }, 1800);
     };
   });
+  // Auto-generate a PIN for any judge who doesn't have one yet, so the admin
+  // always sees something ready to send rather than a blank field.
+  const missing = JUDGES.filter(n=>!ctxJudgePins[n]);
+  if(missing.length){
+    missing.forEach(n=>{ ctxJudgePins[n] = generatePin(); });
+    saveJudgePinsFor(ctxGroupId, ctxJudgePins).then(()=>{
+      missing.forEach(n=>{
+        const el = document.getElementById(`judgePinDisplay${n}`);
+        if(el) el.textContent = ctxJudgePins[n];
+      });
+    });
+  }
 }
 
 async function renderWorksList(){
@@ -2453,6 +2511,40 @@ async function renderWorksList(){
 
 /* ---------- score tab ---------- */
 /* ---------- judge home icon menu ---------- */
+function renderPinGate(){
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="card login-card" style="max-width:360px;margin:40px auto;">
+      <h2>ยืนยันตัวตนกรรมการ</h2>
+      <p style="font-size:13px;color:var(--muted);margin:-4px 0 14px;text-align:center;">
+        กรุณากรอกรหัส PIN 4 หลักที่ได้รับจากผู้จัดการแข่งขัน สำหรับ ${escapeHtml(judgeLabel(lockedJudge))}
+      </p>
+      <div class="login-error" id="pinError"></div>
+      <input type="text" id="pinInput" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="••••" style="text-align:center;font-size:28px;letter-spacing:10px;">
+      <div style="margin-top:16px;text-align:center;">
+        <button class="btn btn-primary" id="pinSubmitBtn" style="width:100%;">ยืนยัน</button>
+      </div>
+    </div>
+  `;
+  const input = document.getElementById('pinInput');
+  const errEl = document.getElementById('pinError');
+  input.focus();
+  const submit = ()=>{
+    const val = input.value.trim();
+    if(val === String(ctxJudgePins[lockedJudge])){
+      markPinVerified(ctxGroupId, lockedJudge);
+      renderApp();
+    } else {
+      errEl.textContent = 'รหัส PIN ไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง หรือติดต่อผู้จัดการแข่งขัน';
+      errEl.classList.add('show');
+      input.value = '';
+      input.focus();
+    }
+  };
+  document.getElementById('pinSubmitBtn').onclick = submit;
+  input.onkeydown = (e)=>{ if(e.key==='Enter') submit(); };
+}
+
 function renderJudgeHomeMenu(){
   const body = document.getElementById('tabBody');
   body.innerHTML = `
