@@ -803,6 +803,9 @@ async function loadAuditLogFor(groupId){
     return r ? JSON.parse(r.value) : [];
   }catch(e){ return []; }
 }
+async function saveAuditLogFor(groupId, log){
+  await storage.set(`auditLog:${groupId}`, JSON.stringify(log), true);
+}
 let openDetailWorkId = null;
 let homeSection = null;
 let judgeSection = null;
@@ -2058,6 +2061,12 @@ async function renderHomeSystemTab(){
       <p style="font-size:12.5px;color:var(--muted);margin:-6px 0 14px;">ดาวน์โหลดข้อมูลทุกกลุ่ม (ผลงาน คะแนนทุกกรรมการ ลายเซ็น สถานะรับรองผล ประวัติการแก้ไข) เป็นไฟล์เดียว เก็บไว้เผื่อฉุกเฉิน แนะนำให้ดาวน์โหลดเก็บไว้เป็นระยะระหว่างงาน</p>
       <button class="btn btn-outline" id="downloadBackupBtn">ดาวน์โหลดข้อมูลสำรองทั้งหมด (JSON)</button>
       <div class="toast" id="backupToast"></div>
+      <hr style="margin:20px 0;border:none;border-top:1px solid var(--border);">
+      <h2 style="margin-bottom:8px;">นำเข้าข้อมูลกลับจากไฟล์สำรอง</h2>
+      <p style="font-size:12.5px;color:var(--red);margin:-2px 0 14px;">⚠️ ใช้เฉพาะกรณีฉุกเฉิน (เช่น ข้อมูลหาย/เสียหาย) เท่านั้น การนำเข้าจะ<strong>เขียนทับ</strong>ข้อมูลปัจจุบันของกลุ่มที่ตรงกัน — กลุ่มที่มีอยู่แล้วในไฟล์สำรองแต่ไม่มีในระบบตอนนี้จะถูกสร้างขึ้นใหม่ กรุณาตรวจสอบไฟล์ให้แน่ใจก่อนนำเข้า</p>
+      <input type="file" id="restoreFileInput" accept="application/json,.json" style="display:block;margin-bottom:12px;">
+      <div id="restorePreviewWrap"></div>
+      <div class="toast" id="restoreToast"></div>
     </div>
   `;
   document.getElementById('saveEvalYearBtn').onclick = async ()=>{
@@ -2144,6 +2153,105 @@ async function renderHomeSystemTab(){
     }
     btn.textContent = original;
     btn.disabled = false;
+  };
+  document.getElementById('restoreFileInput').onchange = (e)=>{
+    const file = e.target.files && e.target.files[0];
+    const previewWrap = document.getElementById('restorePreviewWrap');
+    const toast = document.getElementById('restoreToast');
+    toast.textContent = '';
+    previewWrap.innerHTML = '';
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      let backup;
+      try{
+        backup = JSON.parse(reader.result);
+      }catch(err){
+        toast.style.color = 'var(--red)';
+        toast.textContent = 'ไฟล์นี้ไม่ใช่ JSON ที่ถูกต้อง หรือไฟล์เสียหาย';
+        return;
+      }
+      if(!backup || !Array.isArray(backup.groups)){
+        toast.style.color = 'var(--red)';
+        toast.textContent = 'ไฟล์นี้ไม่ตรงกับรูปแบบไฟล์สำรองของระบบนี้';
+        return;
+      }
+      const existingIds = new Set(groups.map(g=>g.id));
+      const newCount = backup.groups.filter(g=>!existingIds.has(g.id)).length;
+      const overwriteCount = backup.groups.length - newCount;
+      const totalWorks = backup.groups.reduce((s,g)=>s + (Array.isArray(g.works)?g.works.length:0), 0);
+      previewWrap.innerHTML = `
+        <div style="background:var(--gold-light);border-radius:8px;padding:12px 14px;font-size:13px;margin-bottom:12px;">
+          ไฟล์นี้มีข้อมูล <strong>${backup.groups.length} กลุ่ม</strong> (${totalWorks} ผลงานรวมกัน)
+          ${overwriteCount>0 ? `<br>— <strong style="color:var(--red);">${overwriteCount} กลุ่มจะถูกเขียนทับ</strong> (มีอยู่แล้วในระบบตอนนี้)` : ''}
+          ${newCount>0 ? `<br>— ${newCount} กลุ่มเป็นข้อมูลใหม่ (จะถูกสร้างขึ้น)` : ''}
+          ${backup.exportedAt ? `<br>สำรองไว้เมื่อ: ${new Date(backup.exportedAt).toLocaleString('th-TH')}` : ''}
+        </div>
+        <button class="btn btn-ghost" id="restoreConfirmBtn">นำเข้าข้อมูล</button>
+      `;
+      let confirming = false;
+      let revertTimer = null;
+      const confirmBtn = document.getElementById('restoreConfirmBtn');
+      confirmBtn.onclick = async ()=>{
+        if(!confirming){
+          confirming = true;
+          confirmBtn.textContent = 'ยืนยันการนำเข้า? (จะเขียนทับข้อมูลที่ซ้ำกัน)';
+          confirmBtn.style.background = 'var(--red)';
+          confirmBtn.style.color = '#fff';
+          confirmBtn.style.borderColor = 'var(--red)';
+          revertTimer = setTimeout(()=>{
+            confirming = false;
+            confirmBtn.textContent = 'นำเข้าข้อมูล';
+            confirmBtn.style.background = '';
+            confirmBtn.style.color = '';
+            confirmBtn.style.borderColor = '';
+          }, 4000);
+          return;
+        }
+        clearTimeout(revertTimer);
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = 'กำลังนำเข้า...';
+        toast.textContent = '';
+        try{
+          for(const g of backup.groups){
+            if(!existingIds.has(g.id)){
+              groups.push({ id: g.id, name: g.name });
+            } else {
+              const existing = groups.find(x=>x.id===g.id);
+              if(existing) existing.name = g.name;
+            }
+            const worksForSave = (g.works||[]).map(w=>({ id:w.id, title:w.title, presenter:w.presenter, regionalScore: w.regionalScore!=null?w.regionalScore:null }));
+            await saveWorksFor(g.id, worksForSave);
+            for(const w of (g.works||[])){
+              if(!w.scores) continue;
+              for(const judge of JUDGES){
+                const sc = w.scores[judge];
+                if(sc) await saveScore(w.id, judge, sc);
+              }
+            }
+            if(g.judgeNames) await saveJudgeNamesFor(g.id, g.judgeNames);
+            if(g.judgePins) await saveJudgePinsFor(g.id, g.judgePins);
+            if(g.judgeSignatures) await saveJudgeSignaturesFor(g.id, g.judgeSignatures);
+            if(typeof g.certifyApproved === 'boolean') await saveCertifyApprovedFor(g.id, g.certifyApproved);
+            if(Array.isArray(g.auditLog)) await saveAuditLogFor(g.id, g.auditLog);
+          }
+          await saveGroups();
+          logAudit('_global', 'restore_backup', `นำเข้าข้อมูลจากไฟล์สำรอง (${backup.groups.length} กลุ่ม, สำรองไว้เมื่อ ${backup.exportedAt||'ไม่ทราบ'})`).catch(()=>{});
+          toast.style.color = 'var(--green)';
+          toast.textContent = `นำเข้าข้อมูล ${backup.groups.length} กลุ่มเรียบร้อยแล้ว`;
+          previewWrap.innerHTML = '';
+          document.getElementById('restoreFileInput').value = '';
+          renderApp();
+        }catch(err){
+          toast.style.color = 'var(--red)';
+          toast.textContent = 'นำเข้าข้อมูลไม่สำเร็จบางส่วน กรุณาตรวจสอบข้อมูลและลองใหม่ (ข้อมูลที่นำเข้าไปแล้วก่อนเกิดข้อผิดพลาดจะยังอยู่)';
+          console.error('restore failed:', err);
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = 'นำเข้าข้อมูล';
+        }
+      };
+    };
+    reader.readAsText(file);
   };
   await renderGroupsList();
 }
