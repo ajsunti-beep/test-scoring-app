@@ -750,6 +750,54 @@ let currentTab = 'score';
 let scoreJudge = 1;
 let scoreWorkId = null;
 let scoreLevels = {};
+let lastSavedScoreLevels = null;
+/* Tracks whether the score form has unsaved picks — used to warn before the
+   picks get lost silently (closing the tab, or tapping a back link) since the
+   level-picker buttons only update in-memory state until "บันทึกคะแนน" is pressed. */
+function isScoreFormDirty(){
+  if(currentTab !== 'score' || judgeScoreSubView !== 'form') return false;
+  return JSON.stringify(scoreLevels) !== JSON.stringify(lastSavedScoreLevels || {});
+}
+window.addEventListener('beforeunload', (e)=>{
+  if(isScoreFormDirty()){
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
+/* Shows an inline (not native-dialog) confirmation before navigating away from
+   a dirty score form — consistent with the two-step inline confirm pattern used
+   elsewhere in this app instead of window.confirm(). */
+function confirmLeaveIfDirty(proceedFn){
+  if(!isScoreFormDirty()){ proceedFn(); return; }
+  const toast = document.getElementById('scoreToast');
+  if(!toast){ proceedFn(); return; }
+  toast.style.color = 'var(--red)';
+  toast.innerHTML = `คุณยังไม่ได้กดบันทึกคะแนนที่เลือกไว้ หากออกจากหน้านี้ตอนนี้ คะแนนที่เลือกจะหายไป
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-outline" id="confirmLeaveBtn">ออกโดยไม่บันทึก</button>
+      <button class="btn btn-gold" id="cancelLeaveBtn">อยู่หน้านี้ต่อ</button>
+    </div>`;
+  document.getElementById('confirmLeaveBtn').onclick = ()=> proceedFn();
+  document.getElementById('cancelLeaveBtn').onclick = ()=>{ toast.style.color=''; toast.innerHTML=''; };
+}
+/* Lightweight append-only edit history per group, capped so it can't grow
+   forever. Best-effort: never blocks or fails the action it's logging for. */
+async function logAudit(groupId, action, detail){
+  try{
+    const who = (authUser && displayNameForEmail(authUser.email)) || (lockedJudge ? judgeLabel(lockedJudge) : (previewJudge ? `${judgeLabel(previewJudge)} (พรีวิว)` : 'ไม่ทราบผู้ใช้'));
+    const r = await storage.get(`auditLog:${groupId}`, true);
+    let log = r ? JSON.parse(r.value) : [];
+    log.push({ action, detail, by: who, at: Date.now() });
+    if(log.length > 300) log = log.slice(log.length - 300);
+    await storage.set(`auditLog:${groupId}`, JSON.stringify(log), true);
+  }catch(e){ /* audit logging must never block the real action */ }
+}
+async function loadAuditLogFor(groupId){
+  try{
+    const r = await storage.get(`auditLog:${groupId}`, true);
+    return r ? JSON.parse(r.value) : [];
+  }catch(e){ return []; }
+}
 let openDetailWorkId = null;
 let homeSection = null;
 let judgeSection = null;
@@ -1466,7 +1514,7 @@ async function renderApp(){
         <div class="judge-info-strip">${escapeHtml(judgeLabel(ej))}</div>
         <div id="tabBody"></div>
       `;
-      document.getElementById('backToJudgeHome').onclick = (e)=>{ e.preventDefault(); judgeSection = null; renderApp(); };
+      document.getElementById('backToJudgeHome').onclick = (e)=>{ e.preventDefault(); confirmLeaveIfDirty(()=>{ judgeSection = null; renderApp(); }); };
       currentTab = judgeSection;
       renderTabBody();
     }
@@ -1994,6 +2042,12 @@ async function renderHomeSystemTab(){
       <h2>รายการกลุ่ม (${groups.length})</h2>
       <div id="groupsListWrap"></div>
     </div>
+    <div class="card">
+      <h2>สำรองข้อมูลทั้งหมด</h2>
+      <p style="font-size:12.5px;color:var(--muted);margin:-6px 0 14px;">ดาวน์โหลดข้อมูลทุกกลุ่ม (ผลงาน คะแนนทุกกรรมการ ลายเซ็น สถานะรับรองผล ประวัติการแก้ไข) เป็นไฟล์เดียว เก็บไว้เผื่อฉุกเฉิน แนะนำให้ดาวน์โหลดเก็บไว้เป็นระยะระหว่างงาน</p>
+      <button class="btn btn-outline" id="downloadBackupBtn">ดาวน์โหลดข้อมูลสำรองทั้งหมด (JSON)</button>
+      <div class="toast" id="backupToast"></div>
+    </div>
   `;
   document.getElementById('saveEvalYearBtn').onclick = async ()=>{
     const val = document.getElementById('evalYearInput').value.trim();
@@ -2010,10 +2064,75 @@ async function renderHomeSystemTab(){
   };
   document.getElementById('addGroupBtn').onclick = async ()=>{
     const name = document.getElementById('newGroupName').value.trim();
+    const btn = document.getElementById('addGroupBtn');
+    const original = btn.textContent;
     if(!name){ document.getElementById('newGroupName').focus(); return; }
-    groups.push({ id: uid(), name });
+    if(groups.some(g=>g.name.trim().toLowerCase()===name.toLowerCase())){
+      btn.textContent = 'มีชื่อกลุ่มนี้อยู่แล้ว กรุณาใช้ชื่ออื่น';
+      btn.style.background = 'var(--red)';
+      setTimeout(()=>{ btn.textContent = original; btn.style.background = ''; }, 2200);
+      return;
+    }
+    const newGroup = { id: uid(), name };
+    groups.push(newGroup);
     await saveGroups();
+    logAudit('_global', 'add_group', `เพิ่มกลุ่ม "${name}"`).catch(()=>{});
     renderApp();
+  };
+  document.getElementById('downloadBackupBtn').onclick = async ()=>{
+    const btn = document.getElementById('downloadBackupBtn');
+    const toast = document.getElementById('backupToast');
+    const original = btn.textContent;
+    btn.textContent = 'กำลังรวบรวมข้อมูล...';
+    btn.disabled = true;
+    toast.textContent = '';
+    try{
+      const backup = {
+        exportedAt: new Date().toISOString(),
+        evalYear,
+        groups: []
+      };
+      for(const g of groups){
+        const [names, pins, works, signatures, certifyApproved, auditLog] = await Promise.all([
+          loadJudgeNamesFor(g.id),
+          loadJudgePinsFor(g.id),
+          loadWorksFor(g.id),
+          loadJudgeSignaturesFor(g.id),
+          loadCertifyApprovedFor(g.id),
+          loadAuditLogFor(g.id)
+        ]);
+        const worksWithScores = [];
+        for(const w of works){
+          const scores = await loadAllScoresFor(w.id);
+          worksWithScores.push({ ...w, scores });
+        }
+        backup.groups.push({
+          id: g.id, name: g.name,
+          judgeNames: names, judgePins: pins,
+          certifyApproved, judgeSignatures: signatures,
+          works: worksWithScores, auditLog
+        });
+      }
+      const json = JSON.stringify(backup, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+      a.href = url;
+      a.download = `backup-oral-presentation-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.style.color = 'var(--green)';
+      toast.textContent = `ดาวน์โหลดข้อมูลสำรอง ${groups.length} กลุ่มเรียบร้อยแล้ว`;
+    }catch(err){
+      toast.style.color = 'var(--red)';
+      toast.textContent = 'สร้างไฟล์สำรองไม่สำเร็จ กรุณาลองใหม่อีกครั้ง';
+      console.error('backup failed:', err);
+    }
+    btn.textContent = original;
+    btn.disabled = false;
   };
   await renderGroupsList();
 }
@@ -2071,6 +2190,7 @@ function renderGroupRow(g, workCount, namedCount){
     clearTimeout(revertTimer);
     groups = groups.filter(x=>x.id!==g.id);
     await saveGroups();
+    logAudit('_global', 'delete_group', `ลบกลุ่ม "${g.name}"`).catch(()=>{});
     renderApp();
   };
 }
@@ -2147,6 +2267,9 @@ function renderCertifyApprovedSection(){
       // Cancelling: clear all judge signatures for this group so previously
       // signed judges no longer see "รับรองผลแล้ว" and must re-sign after re-approval.
       await saveJudgeSignaturesFor(ctxGroupId, { 1:null, 2:null, 3:null });
+      logAudit(ctxGroupId, 'cancel_certify', 'ยกเลิกการอนุมัติรับรองผล (ล้างลายเซ็นทุกท่าน)').catch(()=>{});
+    } else {
+      logAudit(ctxGroupId, 'approve_certify', 'อนุมัติให้กรรมการรับรองผลได้').catch(()=>{});
     }
     renderCertifyApprovedSection();
   };
@@ -2181,6 +2304,12 @@ async function renderWorksTab(){
         <button class="btn btn-outline" id="exportSummaryCsvBtn">ดาวน์โหลดสรุปผล (CSV)</button>
       </div>
       <div class="toast" id="csvToast"></div>
+    </div>
+    <div class="card">
+      <h2>ประวัติการแก้ไขของกลุ่มนี้</h2>
+      <p style="font-size:12.5px;color:var(--muted);margin:-6px 0 14px;">บันทึกอัตโนมัติของการเพิ่ม/แก้ไข/ลบผลงาน การให้คะแนน การอนุมัติ/ยกเลิกรับรองผล และการลงลายมือชื่อ (เก็บย้อนหลังล่าสุด 300 รายการ)</p>
+      <button class="btn btn-outline" id="loadAuditLogBtn">แสดงประวัติการแก้ไข</button>
+      <div id="auditLogWrap" style="margin-top:14px;"></div>
     </div>
     <div class="card">
       <h2>เพิ่มผลงานวิจัย</h2>
@@ -2219,6 +2348,42 @@ async function renderWorksTab(){
     const currentUrl = urlInputEl.value.trim();
     if(!currentUrl){ e.preventDefault(); return; }
     testLink.href = currentUrl;
+  };
+  document.getElementById('loadAuditLogBtn').onclick = async ()=>{
+    const btn = document.getElementById('loadAuditLogBtn');
+    const wrap = document.getElementById('auditLogWrap');
+    const original = btn.textContent;
+    btn.textContent = 'กำลังโหลด...';
+    btn.disabled = true;
+    try{
+      const log = await loadAuditLogFor(ctxGroupId);
+      if(log.length===0){
+        wrap.innerHTML = `<p style="font-size:13px;color:var(--muted);">ยังไม่มีประวัติการแก้ไขในกลุ่มนี้</p>`;
+      } else {
+        const ACTION_LABELS = {
+          save_score: 'บันทึกคะแนน', add_work: 'เพิ่มผลงาน', edit_work: 'แก้ไขผลงาน',
+          delete_work: 'ลบผลงาน', reset_scores: 'รีเซ็ตคะแนน', approve_certify: 'อนุมัติรับรองผล',
+          cancel_certify: 'ยกเลิกการอนุมัติ', sign: 'ลงลายมือชื่อ'
+        };
+        const rows = log.slice().reverse().map(entry=>{
+          const dt = new Date(entry.at).toLocaleString('th-TH', { year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+          return `<tr>
+            <td style="white-space:nowrap;color:var(--muted);font-size:12px;">${dt}</td>
+            <td style="white-space:nowrap;">${escapeHtml(ACTION_LABELS[entry.action] || entry.action)}</td>
+            <td>${escapeHtml(entry.detail)}</td>
+            <td style="white-space:nowrap;color:var(--muted);">${escapeHtml(entry.by)}</td>
+          </tr>`;
+        }).join('');
+        wrap.innerHTML = `<div style="overflow-x:auto;"><table style="min-width:640px;">
+          <thead><tr><th>เวลา</th><th>การกระทำ</th><th>รายละเอียด</th><th>โดย</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>`;
+      }
+    }catch(err){
+      wrap.innerHTML = `<p style="font-size:13px;color:var(--red);">โหลดประวัติไม่สำเร็จ กรุณาลองใหม่อีกครั้ง</p>`;
+    }
+    btn.textContent = original;
+    btn.disabled = false;
   };
   document.getElementById('exportScoresCsvBtn').onclick = async ()=>{
     const btn = document.getElementById('exportScoresCsvBtn');
@@ -2307,10 +2472,17 @@ async function renderWorksTab(){
     if(!title){ document.getElementById('newTitle').focus(); return; }
     const btn = document.getElementById('addWorkBtn');
     const original = btn.textContent;
+    if(ctxWorks.some(x=>x.title.trim().toLowerCase()===title.toLowerCase())){
+      btn.textContent = 'มีรหัสผลงานนี้อยู่แล้ว กรุณาใช้รหัสอื่น';
+      btn.style.background = 'var(--red)';
+      setTimeout(()=>{ btn.textContent = original; btn.style.background = ''; }, 2200);
+      return;
+    }
     const newWork = { id: uid(), title, presenter, regionalScore: (regionalScore===null || isNaN(regionalScore)) ? null : regionalScore };
     ctxWorks.push(newWork);
     try{
       await saveWorksFor(ctxGroupId, ctxWorks);
+      logAudit(ctxGroupId, 'add_work', `เพิ่มผลงาน "${title}" (ผู้นำเสนอ: ${presenter||'-'})`).catch(()=>{});
       document.getElementById('newTitle').value = '';
       document.getElementById('newPresenter').value = '';
       document.getElementById('newRegional').value = '';
@@ -2420,8 +2592,8 @@ async function renderWorksList(){
     }
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td><strong>${escapeHtml(w.title)}</strong></td>
-      <td style="color:var(--muted)">${escapeHtml(w.presenter||'-')}</td>
+      <td data-title-cell="${w.id}"><strong>${escapeHtml(w.title)}</strong></td>
+      <td data-presenter-cell="${w.id}" style="color:var(--muted)">${escapeHtml(w.presenter||'-')}</td>
       <td>
         <div style="display:flex;gap:6px;align-items:center;">
           <input type="number" step="0.01" style="width:90px;padding:6px 8px;font-size:13px;" data-regional-input="${w.id}" value="${w.regionalScore!=null ? w.regionalScore : ''}">
@@ -2429,11 +2601,59 @@ async function renderWorksList(){
         </div>
       </td>
       <td>${statusHtml}</td>
-      <td style="white-space:nowrap;">
+      <td style="white-space:nowrap;" data-actions-cell="${w.id}">
+        <button class="btn btn-outline" data-editwork="${w.id}" style="margin-right:6px;">แก้ไข</button>
         <button class="btn btn-outline" data-reset="${w.id}" style="margin-right:6px;">รีเซ็ตคะแนน</button>
         <button class="btn btn-ghost" data-id="${w.id}">ลบ</button>
       </td>
     `;
+    const editBtn = tr.querySelector(`button[data-editwork="${w.id}"]`);
+    editBtn.onclick = ()=>{
+      const titleCell = tr.querySelector(`td[data-title-cell="${w.id}"]`);
+      const presenterCell = tr.querySelector(`td[data-presenter-cell="${w.id}"]`);
+      const actionsCell = tr.querySelector(`td[data-actions-cell="${w.id}"]`);
+      titleCell.innerHTML = `<input type="text" data-edit-title="${w.id}" value="${escapeHtml(w.title)}" style="width:100%;min-width:120px;">`;
+      presenterCell.innerHTML = `<input type="text" data-edit-presenter="${w.id}" value="${escapeHtml(w.presenter||'')}" style="width:100%;min-width:120px;">`;
+      actionsCell.innerHTML = `
+        <button class="btn btn-gold" data-savework="${w.id}" style="margin-right:6px;">บันทึกการแก้ไข</button>
+        <button class="btn btn-outline" data-cancelwork="${w.id}">ยกเลิก</button>
+      `;
+      const editToast = document.createElement('div');
+      editToast.className = 'toast';
+      editToast.id = `editWorkToast${w.id}`;
+      actionsCell.appendChild(editToast);
+      actionsCell.querySelector(`button[data-cancelwork="${w.id}"]`).onclick = ()=> renderWorksList();
+      actionsCell.querySelector(`button[data-savework="${w.id}"]`).onclick = async ()=>{
+        const newTitle = titleCell.querySelector('input').value.trim();
+        const newPresenter = presenterCell.querySelector('input').value.trim();
+        const toast = document.getElementById(`editWorkToast${w.id}`);
+        if(!newTitle){
+          toast.style.color = 'var(--red)';
+          toast.textContent = 'กรุณากรอกรหัสผลงานวิจัย';
+          return;
+        }
+        const dup = ctxWorks.some(x=>x.id!==w.id && x.title.trim().toLowerCase()===newTitle.toLowerCase());
+        if(dup){
+          toast.style.color = 'var(--red)';
+          toast.textContent = 'มีรหัสผลงานวิจัยนี้อยู่แล้วในกลุ่มนี้ กรุณาใช้รหัสอื่น';
+          return;
+        }
+        const target = ctxWorks.find(x=>x.id===w.id);
+        const prevTitle = target.title, prevPresenter = target.presenter;
+        target.title = newTitle;
+        target.presenter = newPresenter;
+        try{
+          await saveWorksFor(ctxGroupId, ctxWorks);
+          logAudit(ctxGroupId, 'edit_work', `แก้ไขผลงาน "${prevTitle}" → "${newTitle}"${prevPresenter!==newPresenter ? ` (ผู้นำเสนอ: "${prevPresenter||'-'}" → "${newPresenter||'-'}")` : ''}`).catch(()=>{});
+          renderWorksList();
+        }catch(err){
+          target.title = prevTitle;
+          target.presenter = prevPresenter;
+          toast.style.color = 'var(--red)';
+          toast.textContent = 'บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง';
+        }
+      };
+    };
     const regInput = tr.querySelector(`input[data-regional-input="${w.id}"]`);
     const regBtn = tr.querySelector(`button[data-regional-save="${w.id}"]`);
     regBtn.onclick = async ()=>{
@@ -2479,6 +2699,7 @@ async function renderWorksList(){
       resetBtn.textContent = 'กำลังรีเซ็ต...';
       resetBtn.disabled = true;
       await resetScoresForWork(w.id);
+      logAudit(ctxGroupId, 'reset_scores', `รีเซ็ตคะแนนทั้งหมดของผลงาน "${w.title}"`).catch(()=>{});
       renderWorksList();
     };
     const delBtn = tr.querySelector('button[data-id]');
@@ -2503,6 +2724,7 @@ async function renderWorksList(){
       clearTimeout(revertTimer);
       ctxWorks = ctxWorks.filter(x=>x.id!==w.id);
       await saveWorksFor(ctxGroupId, ctxWorks);
+      logAudit(ctxGroupId, 'delete_work', `ลบผลงาน "${w.title}" (ผู้นำเสนอ: ${w.presenter||'-'})`).catch(()=>{});
       renderWorksTab();
     };
     tbody.appendChild(tr);
@@ -2645,13 +2867,14 @@ function renderJudgeScoreForm(){
     </div>
     <div id="rubricFormWrap"></div>
   `;
-  document.getElementById('backToWorksList').onclick = (e)=>{ e.preventDefault(); judgeScoreSubView = 'list'; renderJudgeWorksList(); };
+  document.getElementById('backToWorksList').onclick = (e)=>{ e.preventDefault(); confirmLeaveIfDirty(()=>{ judgeScoreSubView = 'list'; renderJudgeWorksList(); }); };
   loadFormState();
 }
 
 async function loadFormState(){
   const existing = await loadScore(scoreWorkId, scoreJudge);
   scoreLevels = existing ? {...existing.levels} : {};
+  lastSavedScoreLevels = {...scoreLevels};
   renderRubricForm();
 }
 
@@ -2699,7 +2922,7 @@ function renderRubricForm(){
 
   const backBottom = document.getElementById('backToWorksListBottom');
   if(backBottom){
-    backBottom.onclick = (e)=>{ e.preventDefault(); judgeScoreSubView = 'list'; renderJudgeWorksList(); };
+    backBottom.onclick = (e)=>{ e.preventDefault(); confirmLeaveIfDirty(()=>{ judgeScoreSubView = 'list'; renderJudgeWorksList(); }); };
   }
 
   if(lockedBySignature){
@@ -2718,6 +2941,9 @@ function renderRubricForm(){
   });
   document.getElementById('saveScoreBtn').onclick = async ()=>{
     const toast = document.getElementById('scoreToast');
+    const btn = document.getElementById('saveScoreBtn');
+    toast.style.color = '';
+    toast.innerHTML = '';
     if(ctxJudgeSignatures[scoreJudge]){
       toast.style.color = 'var(--red)';
       toast.textContent = `${judgeLabel(scoreJudge)} ได้ลงลายมือชื่อรับรองผลแล้ว ไม่สามารถบันทึกคะแนนเพิ่มเติมได้`;
@@ -2729,13 +2955,39 @@ function renderRubricForm(){
       toast.textContent = 'กรุณาให้คะแนนครบทุกตัวบ่งชี้ก่อนบันทึก';
       return;
     }
-    await saveScore(scoreWorkId, scoreJudge, { levels: scoreLevels, total: computeTotal(scoreLevels), savedAt: new Date().toISOString() });
-    toast.style.color = 'var(--green)';
-    toast.textContent = `บันทึกคะแนนของ ${judgeLabel(scoreJudge)} เรียบร้อยแล้ว (รวม ${computeTotal(scoreLevels)} คะแนน)`;
-    const workNow = ctxWorks.find(w=>w.id===scoreWorkId);
-    if(workNow){
-      pushRowsToSheets(ctxGroupId, 'Scores', SCORE_ROW_HEADERS, [buildScoreRow(ctxGroupName, workNow, judgeLabel(scoreJudge), scoreLevels)]).catch(()=>{});
+    const levelsSnapshot = {...scoreLevels};
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'กำลังบันทึก...';
+    try{
+      if(navigator.onLine === false){
+        throw Object.assign(new Error('offline'), { code:'client/offline' });
+      }
+      await withTimeout(
+        saveScore(scoreWorkId, scoreJudge, { levels: levelsSnapshot, total: computeTotal(levelsSnapshot), savedAt: new Date().toISOString() }),
+        15000,
+        'การบันทึกใช้เวลานานเกินไป'
+      );
+      lastSavedScoreLevels = levelsSnapshot;
+      toast.style.color = 'var(--green)';
+      toast.textContent = `บันทึกคะแนนของ ${judgeLabel(scoreJudge)} เรียบร้อยแล้ว (รวม ${computeTotal(levelsSnapshot)} คะแนน)`;
+      const workNow = ctxWorks.find(w=>w.id===scoreWorkId);
+      if(workNow){
+        pushRowsToSheets(ctxGroupId, 'Scores', SCORE_ROW_HEADERS, [buildScoreRow(ctxGroupName, workNow, judgeLabel(scoreJudge), levelsSnapshot)]).catch(()=>{});
+        logAudit(ctxGroupId, 'save_score', `${judgeLabel(scoreJudge)} บันทึกคะแนน "${workNow.title}" รวม ${computeTotal(levelsSnapshot)} คะแนน`).catch(()=>{});
+      }
+    }catch(err){
+      toast.style.color = 'var(--red)';
+      if(err && (err.code==='client/timeout' || err.code==='client/offline')){
+        toast.textContent = 'สัญญาณอินเทอร์เน็ตช้าหรือขาดหาย กรุณาตรวจสอบ Wi-Fi/สัญญาณมือถือ แล้วกด "บันทึกคะแนน" อีกครั้ง (คะแนนที่เลือกไว้ยังอยู่ ไม่ต้องเลือกใหม่)';
+      } else {
+        const codeStr = err && err.code ? ` [รหัส: ${err.code}]` : (err && err.message ? ` [${err.message}]` : '');
+        toast.textContent = `บันทึกคะแนนไม่สำเร็จ กรุณาลองใหม่อีกครั้ง${codeStr}`;
+      }
+      console.error('score save failed:', err);
     }
+    btn.disabled = false;
+    btn.textContent = original;
   };
   updateLiveTotal();
 }
@@ -3138,6 +3390,7 @@ async function renderSummaryTab(){
               15000,
               'การบันทึกใช้เวลานานเกินไป'
             );
+            logAudit(ctxGroupId, 'sign', `${judgeLabel(ej)} ลงลายมือชื่อรับรองผลการประเมิน (${sigMode==='upload' ? 'แนบไฟล์รูปภาพ' : 'วาดลายเซ็น'})`).catch(()=>{});
             renderSummaryTab();
           }catch(err){
             ctxJudgeSignatures = prevSignatures;
