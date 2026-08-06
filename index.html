@@ -777,6 +777,11 @@ function confirmLeaveIfDirty(proceedFn){
       <button class="btn btn-outline" id="confirmLeaveBtn">ออกโดยไม่บันทึก</button>
       <button class="btn btn-gold" id="cancelLeaveBtn">อยู่หน้านี้ต่อ</button>
     </div>`;
+  /* The warning lives next to "บันทึกคะแนน" at the bottom of a (often long)
+     form. If the click that triggered this came from the link at the TOP of
+     the page instead, the warning would render off-screen with nothing visibly
+     happening — so always scroll it into view regardless of which link fired it. */
+  toast.scrollIntoView({ behavior:'smooth', block:'center' });
   document.getElementById('confirmLeaveBtn').onclick = ()=> proceedFn();
   document.getElementById('cancelLeaveBtn').onclick = ()=>{ toast.style.color=''; toast.innerHTML=''; };
 }
@@ -2279,6 +2284,12 @@ async function renderWorksTab(){
   const body = document.getElementById('tabBody');
   const sheetsUrl = await loadSheetsUrlFor(ctxGroupId);
   body.innerHTML = `
+    <div class="card" style="border:1.5px solid var(--gold);">
+      <h2>📋 ประวัติการแก้ไขของกลุ่มนี้</h2>
+      <p style="font-size:12.5px;color:var(--muted);margin:-6px 0 14px;">บันทึกอัตโนมัติของการเพิ่ม/แก้ไข/ลบผลงาน การให้คะแนน การอนุมัติ/ยกเลิกรับรองผล และการลงลายมือชื่อ (เก็บย้อนหลังล่าสุด 300 รายการ)</p>
+      <button class="btn btn-outline" id="loadAuditLogBtn">แสดงประวัติการแก้ไข</button>
+      <div id="auditLogWrap" style="margin-top:14px;"></div>
+    </div>
     <div class="card">
       <h2>รายชื่อกรรมการและลิงก์สำหรับส่งให้แต่ละท่าน</h2>
       <div id="judgeNamesWrap"></div>
@@ -2304,12 +2315,6 @@ async function renderWorksTab(){
         <button class="btn btn-outline" id="exportSummaryCsvBtn">ดาวน์โหลดสรุปผล (CSV)</button>
       </div>
       <div class="toast" id="csvToast"></div>
-    </div>
-    <div class="card">
-      <h2>ประวัติการแก้ไขของกลุ่มนี้</h2>
-      <p style="font-size:12.5px;color:var(--muted);margin:-6px 0 14px;">บันทึกอัตโนมัติของการเพิ่ม/แก้ไข/ลบผลงาน การให้คะแนน การอนุมัติ/ยกเลิกรับรองผล และการลงลายมือชื่อ (เก็บย้อนหลังล่าสุด 300 รายการ)</p>
-      <button class="btn btn-outline" id="loadAuditLogBtn">แสดงประวัติการแก้ไข</button>
-      <div id="auditLogWrap" style="margin-top:14px;"></div>
     </div>
     <div class="card">
       <h2>เพิ่มผลงานวิจัย</h2>
@@ -2592,7 +2597,7 @@ async function renderWorksList(){
     }
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td data-title-cell="${w.id}"><strong>${escapeHtml(w.title)}</strong></td>
+      <td data-title-cell="${w.id}"><strong>${escapeHtml(w.title)}</strong><br><a href="#" data-editwork="${w.id}" style="font-size:12px;color:var(--gold);">✎ แก้ไข</a></td>
       <td data-presenter-cell="${w.id}" style="color:var(--muted)">${escapeHtml(w.presenter||'-')}</td>
       <td>
         <div style="display:flex;gap:6px;align-items:center;">
@@ -2602,13 +2607,13 @@ async function renderWorksList(){
       </td>
       <td>${statusHtml}</td>
       <td style="white-space:nowrap;" data-actions-cell="${w.id}">
-        <button class="btn btn-outline" data-editwork="${w.id}" style="margin-right:6px;">แก้ไข</button>
         <button class="btn btn-outline" data-reset="${w.id}" style="margin-right:6px;">รีเซ็ตคะแนน</button>
         <button class="btn btn-ghost" data-id="${w.id}">ลบ</button>
       </td>
     `;
-    const editBtn = tr.querySelector(`button[data-editwork="${w.id}"]`);
-    editBtn.onclick = ()=>{
+    const editBtn = tr.querySelector(`a[data-editwork="${w.id}"]`);
+    editBtn.onclick = (e)=>{
+      e.preventDefault();
       const titleCell = tr.querySelector(`td[data-title-cell="${w.id}"]`);
       const presenterCell = tr.querySelector(`td[data-presenter-cell="${w.id}"]`);
       const actionsCell = tr.querySelector(`td[data-actions-cell="${w.id}"]`);
