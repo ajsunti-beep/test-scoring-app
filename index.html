@@ -463,6 +463,13 @@
     color:#fff;
   }
   .level-btn.active small{color:#fff;}
+  .level-btn:disabled{
+    cursor:not-allowed;
+    opacity:.55;
+  }
+  .level-btn.active:disabled{
+    opacity:.8;
+  }
 
   .total-bar{
     position:sticky;
@@ -2559,7 +2566,14 @@ async function loadFormState(){
 function renderRubricForm(){
   const wrap = document.getElementById('rubricFormWrap');
   if(!wrap) return;
+  const lockedBySignature = !!ctxJudgeSignatures[scoreJudge];
   let html = '<div class="card">';
+  if(lockedBySignature){
+    html += `<div class="toast show" style="color:var(--red);background:var(--red-bg);border-radius:8px;padding:10px 14px;margin-bottom:14px;">
+      🔒 ${escapeHtml(judgeLabel(scoreJudge))} ได้ลงลายมือชื่อรับรองผลการประเมินแล้ว จึงไม่สามารถแก้ไขคะแนนของกรรมการท่านนี้ได้อีก
+      หากจำเป็นต้องแก้ไข กรุณาติดต่อผู้ดูแลระบบให้ยกเลิกการอนุมัติรับรองผลของกลุ่มนี้ก่อน (การยกเลิกจะล้างลายเซ็นของกรรมการทุกท่านในกลุ่ม)
+    </div>`;
+  }
   RUBRIC.forEach((dim)=>{
     const dimMax = dim.weight*3;
     html += `<div class="dim-block">
@@ -2570,7 +2584,7 @@ function renderRubricForm(){
         <div class="ind-top"><strong>${ind.id} ${escapeHtml(ind.name)}</strong><span>น้ำหนัก ${ind.weight} · เต็ม ${ind.weight*3}</span></div>
         <p class="ind-desc">${escapeHtml(ind.desc)}</p>
         <div class="level-picker">
-          ${LEVELS.map(l=>`<button class="level-btn ${cur===l.v?'active':''}" data-ind="${ind.id}" data-v="${l.v}">${l.label}<small>${l.sub}</small></button>`).join('')}
+          ${LEVELS.map(l=>`<button class="level-btn ${cur===l.v?'active':''}" data-ind="${ind.id}" data-v="${l.v}" ${lockedBySignature?'disabled':''}>${l.label}<small>${l.sub}</small></button>`).join('')}
         </div>
       </div>`;
     });
@@ -2583,7 +2597,7 @@ function renderRubricForm(){
     </div>
     <div style="text-align:center;">
       <span style="display:inline-flex;align-items:center;gap:32px;margin-top:14px;flex-wrap:wrap;justify-content:center;">
-        <button class="btn btn-gold" id="saveScoreBtn">บันทึกคะแนน</button>
+        ${lockedBySignature ? '' : `<button class="btn btn-gold" id="saveScoreBtn">บันทึกคะแนน</button>`}
         ${effectiveJudge() ? `<a href="#" class="back-link" id="backToWorksListBottom" style="margin-bottom:0;">← กลับไปยังรายการผลงาน</a>` : ''}
       </span>
       <div class="toast" id="scoreToast"></div>
@@ -2594,6 +2608,11 @@ function renderRubricForm(){
   const backBottom = document.getElementById('backToWorksListBottom');
   if(backBottom){
     backBottom.onclick = (e)=>{ e.preventDefault(); judgeScoreSubView = 'list'; renderJudgeWorksList(); };
+  }
+
+  if(lockedBySignature){
+    updateLiveTotal();
+    return;
   }
 
   wrap.querySelectorAll('.level-btn').forEach(btn=>{
@@ -2607,6 +2626,12 @@ function renderRubricForm(){
   });
   document.getElementById('saveScoreBtn').onclick = async ()=>{
     const toast = document.getElementById('scoreToast');
+    if(ctxJudgeSignatures[scoreJudge]){
+      toast.style.color = 'var(--red)';
+      toast.textContent = `${judgeLabel(scoreJudge)} ได้ลงลายมือชื่อรับรองผลแล้ว ไม่สามารถบันทึกคะแนนเพิ่มเติมได้`;
+      renderRubricForm();
+      return;
+    }
     if(!isComplete(scoreLevels)){
       toast.style.color = 'var(--red)';
       toast.textContent = 'กรุณาให้คะแนนครบทุกตัวบ่งชี้ก่อนบันทึก';
