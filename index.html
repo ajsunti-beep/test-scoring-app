@@ -616,10 +616,10 @@
   .login-back-link:hover{ color:var(--orange); }
 
   #printReportRoot{ display:none; }
-  .report-title{ font-family:'TH Sarabun PSK','TH Sarabun New','Sarabun',sans-serif; font-weight:700; font-size:19px; margin:0 0 4px; color:#000; }
-  .report-subtitle{ font-family:'TH Sarabun PSK','TH Sarabun New','Sarabun',sans-serif; font-weight:700; font-size:16px; margin:0 0 4px; color:#000; }
-  .report-meta{ font-size:12px; color:#333; margin:0 0 10px; }
-  .report-table{ width:100%; border-collapse:collapse; font-size:11px; margin-bottom:10px; color:#000; }
+  .report-title{ font-family:'TH Sarabun PSK','TH Sarabun New','Sarabun',sans-serif; font-weight:700; font-size:20pt; margin:0 0 4px; color:#000; }
+  .report-subtitle{ font-family:'TH Sarabun PSK','TH Sarabun New','Sarabun',sans-serif; font-weight:700; font-size:17pt; margin:0 0 4px; color:#000; }
+  .report-meta{ font-size:14pt; color:#333; margin:0 0 10px; }
+  .report-table{ width:100%; border-collapse:collapse; font-size:16pt; margin-bottom:10px; color:#000; }
   .report-table th, .report-table td{ border:1px solid #999; padding:4px 6px; text-align:left; }
   .sig-block{ margin-top:12px; display:flex; flex-direction:column; gap:10px; }
   .sig-row{ text-align:center; }
@@ -3229,22 +3229,22 @@ async function generatePdfReport(){
 <title>รายงานผลการประเมิน - ${escapeHtml(ctxGroupName)}</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&display=swap');
-  @page{ size:A4; margin:1.6cm; }
-  body{ font-family:'TH Sarabun PSK','TH Sarabun New','Sarabun',sans-serif; font-size:15px; color:#000; margin:0; padding:8px; background:#fff; }
+  @page{ size:A4; margin:1.2cm; }
+  body{ font-family:'TH Sarabun PSK','TH Sarabun New','Sarabun',sans-serif; font-size:16pt; color:#000; margin:0; padding:6px; background:#fff; }
   .report-page{ page-break-after:always; page-break-inside:avoid; break-inside:avoid-page; }
   .report-page:last-child{ page-break-after:auto; }
-  .report-title{ font-family:inherit; font-weight:700; font-size:19px; margin:0 0 3px; }
-  .report-subtitle{ font-family:inherit; font-weight:700; font-size:16px; margin:0 0 3px; }
-  .report-meta{ font-size:13px; color:#333; margin:0 0 6px; }
-  .report-table{ width:100%; border-collapse:collapse; font-size:13px; margin-bottom:6px; }
-  .report-table th, .report-table td{ border:1px solid #999; padding:2px 5px; text-align:left; line-height:1.25; }
-  .sig-block{ margin-top:8px; display:flex; flex-direction:column; gap:6px; }
+  .report-title{ font-family:inherit; font-weight:700; font-size:20pt; margin:0 0 3px; }
+  .report-subtitle{ font-family:inherit; font-weight:700; font-size:17pt; margin:0 0 3px; }
+  .report-meta{ font-size:14pt; color:#333; margin:0 0 5px; }
+  .report-table{ width:100%; border-collapse:collapse; font-size:16pt; margin-bottom:5px; }
+  .report-table th, .report-table td{ border:1px solid #999; padding:1px 5px; text-align:left; line-height:1.15; }
+  .sig-block{ margin-top:6px; display:flex; flex-direction:column; gap:4px; }
   .sig-row{ text-align:center; }
-  .sig-line-row{ display:flex; align-items:flex-end; justify-content:center; gap:6px; font-size:14px; margin-bottom:2px; }
-  .sig-underline{ display:inline-block; width:210px; height:38px; border-bottom:1px solid #333; position:relative; }
-  .sig-image{ position:absolute; bottom:2px; left:50%; transform:translateX(-50%); height:36px; max-width:200px; object-fit:contain; }
-  .sig-name{ font-size:13px; }
-  .sig-date{ font-size:12px; margin-top:1px; color:#333; }
+  .sig-line-row{ display:flex; align-items:flex-end; justify-content:center; gap:6px; font-size:16pt; margin-bottom:1px; }
+  .sig-underline{ display:inline-block; width:210px; height:34px; border-bottom:1px solid #333; position:relative; }
+  .sig-image{ position:absolute; bottom:2px; left:50%; transform:translateX(-50%); height:32px; max-width:200px; object-fit:contain; }
+  .sig-name{ font-size:15pt; }
+  .sig-date{ font-size:13pt; margin-top:0; color:#333; }
   .print-hint{ background:#FCE6D3; color:#8A4A14; padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:14px; font-family:'Mali','Noto Sans Thai',sans-serif; }
   @media print{ .print-hint{ display:none; } }
 </style>
