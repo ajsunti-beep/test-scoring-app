@@ -521,6 +521,16 @@
   }
   .detail-row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed var(--border);}
   .detail-row:last-child{border-bottom:none;font-weight:600;}
+  .score-detail-table{ width:100%; table-layout:fixed; }
+  .score-detail-table th, .score-detail-table td{
+    word-break:break-word;
+    overflow-wrap:anywhere;
+    line-height:1.3;
+    vertical-align:middle;
+  }
+  .score-detail-table th:first-child, .score-detail-table td:first-child{ width:26%; text-align:left; }
+  .score-detail-table th:nth-child(2), .score-detail-table th:nth-child(3), .score-detail-table th:nth-child(4){ width:17%; }
+  .score-detail-table th:nth-child(5), .score-detail-table th:nth-child(6){ width:11%; }
 
   @media (max-width:640px){
     .row > div{min-width:100%;}
@@ -3550,7 +3560,7 @@ async function renderSummaryTab(){
       if(!res.allDone){
         panel.innerHTML = `<div style="color:var(--muted)">รอกรรมการให้คะแนนครบ 3 คนก่อนจึงจะสรุปฐานนิยมได้ (ขณะนี้ ${res.doneCount}/3)</div>`;
       } else {
-        let dhtml = `<table style="font-size:12px;"><thead><tr><th>ตัวบ่งชี้</th><th>${escapeHtml(judgeLabel(1))}</th><th>${escapeHtml(judgeLabel(2))}</th><th>${escapeHtml(judgeLabel(3))}</th><th>ฐานนิยม</th><th>คะแนน</th></tr></thead><tbody>`;
+        let dhtml = `<table class="score-detail-table" style="font-size:12px;"><thead><tr><th>ตัวบ่งชี้</th><th>${escapeHtml(judgeLabel(1))}</th><th>${escapeHtml(judgeLabel(2))}</th><th>${escapeHtml(judgeLabel(3))}</th><th>ฐานนิยม</th><th>คะแนน</th></tr></thead><tbody>`;
         res.indicators.forEach(ind=>{
           const conflict = ind.mode===null;
           dhtml += `<tr style="${conflict?'background:var(--red-bg)':''}">
