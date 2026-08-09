@@ -621,11 +621,12 @@
   .report-meta{ font-size:14pt; color:#333; margin:0 0 10px; }
   .report-table{ width:100%; border-collapse:collapse; font-size:16pt; margin-bottom:10px; color:#000; }
   .report-table th, .report-table td{ border:1px solid #999; padding:4px 6px; text-align:left; }
+  .report-table th{ text-align:center; }
   .sig-block{ margin-top:12px; display:flex; flex-direction:column; gap:10px; }
   .sig-row{ text-align:center; }
   .sig-line-row{ display:flex; align-items:flex-end; justify-content:center; gap:6px; font-size:13px; margin-bottom:5px; }
-  .sig-underline{ display:inline-block; width:210px; height:44px; border-bottom:1px solid #333; position:relative; }
-  .sig-image{ position:absolute; bottom:2px; left:50%; transform:translateX(-50%); height:42px; max-width:200px; object-fit:contain; }
+  .sig-underline{ display:inline-block; width:210px; height:3.16cm; border-bottom:1px solid #333; position:relative; }
+  .sig-image{ position:absolute; bottom:2px; left:50%; transform:translateX(-50%); height:2.96cm; max-width:200px; object-fit:contain; }
   .sig-name{ font-size:12px; }
   .sig-date{ font-size:11px; margin-top:3px; color:#333; }
 
@@ -3238,14 +3239,15 @@ async function generatePdfReport(){
   .report-meta{ font-size:14pt; color:#333; margin:0 0 5px; }
   .report-table{ width:100%; border-collapse:collapse; font-size:16pt; margin-bottom:5px; }
   .report-table th, .report-table td{ border:1px solid #999; padding:1px 5px; text-align:left; line-height:1.15; }
+  .report-table th{ text-align:center; }
   .sig-block{ margin-top:6px; display:flex; flex-direction:column; gap:4px; }
   .sig-row{ text-align:center; }
   .sig-line-row{ display:flex; align-items:flex-end; justify-content:center; gap:6px; font-size:16pt; margin-bottom:1px; }
-  .sig-underline{ display:inline-block; width:210px; height:34px; border-bottom:1px solid #333; position:relative; }
-  .sig-image{ position:absolute; bottom:2px; left:50%; transform:translateX(-50%); height:32px; max-width:200px; object-fit:contain; }
+  .sig-underline{ display:inline-block; width:210px; height:2.9cm; border-bottom:1px solid #333; position:relative; }
+  .sig-image{ position:absolute; bottom:2px; left:50%; transform:translateX(-50%); height:2.7cm; max-width:200px; object-fit:contain; }
   .sig-name{ font-size:15pt; }
   .sig-date{ font-size:13pt; margin-top:0; color:#333; }
-  .print-hint{ background:#FCE6D3; color:#8A4A14; padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:14px; font-family:'Mali','Noto Sans Thai',sans-serif; }
+  .print-hint{ background:#FCE6D3; color:#8A4A14; padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:14px; font-family:'TH Sarabun PSK','TH Sarabun New','Sarabun',sans-serif; }
   @media print{ .print-hint{ display:none; } }
 </style>
 </head>
