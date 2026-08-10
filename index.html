@@ -2045,6 +2045,7 @@ function renderSuperAdminsList(){
 
 async function renderHomeSystemTab(){
   const body = document.getElementById('homeTabBody');
+  const canManageBackup = isSuperAdminUser();
   body.innerHTML = `
     <div class="card">
       <h2>กำหนดปีที่ประเมิน (พ.ศ.)</h2>
@@ -2075,6 +2076,7 @@ async function renderHomeSystemTab(){
       <h2>รายการกลุ่ม (${groups.length})</h2>
       <div id="groupsListWrap"></div>
     </div>
+    ${canManageBackup ? `
     <div class="card">
       <h2>สำรองข้อมูลทั้งหมด</h2>
       <p style="font-size:12.5px;color:var(--muted);margin:-6px 0 14px;">ดาวน์โหลดข้อมูลทุกกลุ่ม (ผลงาน คะแนนทุกกรรมการ ลายเซ็น สถานะรับรองผล ประวัติการแก้ไข) เป็นไฟล์เดียว เก็บไว้เผื่อฉุกเฉิน แนะนำให้ดาวน์โหลดเก็บไว้เป็นระยะระหว่างงาน</p>
@@ -2087,6 +2089,7 @@ async function renderHomeSystemTab(){
       <div id="restorePreviewWrap"></div>
       <div class="toast" id="restoreToast"></div>
     </div>
+    ` : ''}
   `;
   document.getElementById('saveEvalYearBtn').onclick = async ()=>{
     const val = document.getElementById('evalYearInput').value.trim();
@@ -2118,7 +2121,7 @@ async function renderHomeSystemTab(){
     logAudit('_global', 'add_group', `เพิ่มกลุ่ม "${name}"`).catch(()=>{});
     renderApp();
   };
-  document.getElementById('downloadBackupBtn').onclick = async ()=>{
+  if(canManageBackup) document.getElementById('downloadBackupBtn').onclick = async ()=>{
     const btn = document.getElementById('downloadBackupBtn');
     const toast = document.getElementById('backupToast');
     const original = btn.textContent;
@@ -2173,7 +2176,7 @@ async function renderHomeSystemTab(){
     btn.textContent = original;
     btn.disabled = false;
   };
-  document.getElementById('restoreFileInput').onchange = (e)=>{
+  if(canManageBackup) document.getElementById('restoreFileInput').onchange = (e)=>{
     const file = e.target.files && e.target.files[0];
     const previewWrap = document.getElementById('restorePreviewWrap');
     const toast = document.getElementById('restoreToast');
