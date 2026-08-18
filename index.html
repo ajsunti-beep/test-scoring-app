@@ -3693,12 +3693,18 @@ async function renderSummaryTab(){
                 <img src="${src}" alt="ลายเซ็นที่แนบ" style="max-width:100%;max-height:200px;display:block;margin:0 auto;">
               </div>
               ${originalUploadDataUrl ? `
-                <label style="display:flex;align-items:center;gap:6px;justify-content:center;margin-top:8px;font-size:12.5px;color:var(--muted);cursor:${bgProcessing ? 'default' : 'pointer'};">
+                <label id="sigBgToggleLabel" style="display:flex;align-items:center;gap:6px;justify-content:center;margin-top:8px;font-size:12.5px;color:var(--muted);cursor:${bgProcessing ? 'default' : 'pointer'};">
                   <input type="checkbox" id="sigBgToggle" ${bgRemovalOn ? 'checked' : ''} ${bgProcessing ? 'disabled' : ''}>
                   ${bgProcessing ? 'กำลังลบพื้นหลัง...' : 'ลบพื้นหลัง/ครอปให้พอดีอัตโนมัติ'}
                 </label>
               ` : ''}
             `;
+            // The preview (and this label) sit inside the dropzone, which opens
+            // the native file picker on any click within it. Without stopping
+            // propagation here, clicking the checkbox bubbles up to that
+            // handler and pops the OS "Open file" dialog on top of the app.
+            const bgToggleLabel = document.getElementById('sigBgToggleLabel');
+            if(bgToggleLabel) bgToggleLabel.onclick = (e)=> e.stopPropagation();
             const bgToggle = document.getElementById('sigBgToggle');
             if(bgToggle) bgToggle.onchange = async (e)=>{
               bgRemovalOn = e.target.checked;
