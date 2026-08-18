@@ -2979,17 +2979,22 @@ function renderScoreTab(){
   loadFormState();
 }
 
+async function resetScoreForJudge(workId, judge){
+  try{ await storage.delete(`score:${workId}:${judge}`, true); }catch(e){ /* ignore if already absent */ }
+}
 function renderJudgeWorksList(){
   const body = document.getElementById('tabBody');
+  const showResetBtn = !!previewJudge && !ctxJudgeSignatures[previewJudge];
   let html = `<div class="card"><h2>ผลงานวิจัยที่ต้องประเมิน</h2>
     <div style="overflow-x:auto;">
-    <table><thead><tr><th>ลำดับที่</th><th>รหัสผลงาน</th><th>ชื่อผู้วิจัย</th><th></th></tr></thead><tbody>`;
+    <table><thead><tr><th>ลำดับที่</th><th>รหัสผลงาน</th><th>ชื่อผู้วิจัย</th><th></th>${showResetBtn ? '<th></th>' : ''}</tr></thead><tbody>`;
   ctxWorks.forEach((w,i)=>{
     html += `<tr>
       <td>${i+1}</td>
       <td><strong>${escapeHtml(w.title)}</strong></td>
       <td>${escapeHtml(w.presenter||'-')}</td>
       <td><button class="btn btn-primary" data-score="${w.id}">ให้คะแนน</button></td>
+      ${showResetBtn ? `<td><button class="btn btn-outline" style="color:var(--red);border-color:var(--red);" data-reset-judge="${w.id}">รีเซ็ตคะแนน</button></td>` : ''}
     </tr>`;
   });
   html += `</tbody></table></div></div>`;
@@ -3001,6 +3006,35 @@ function renderJudgeWorksList(){
       renderJudgeScoreForm();
     };
   });
+  if(showResetBtn){
+    body.querySelectorAll('button[data-reset-judge]').forEach(btn=>{
+      let confirming = false;
+      let revertTimer = null;
+      btn.onclick = async ()=>{
+        if(!confirming){
+          confirming = true;
+          btn.textContent = 'ยืนยันรีเซ็ต?';
+          btn.style.background = 'var(--red)';
+          btn.style.color = '#fff';
+          revertTimer = setTimeout(()=>{
+            confirming = false;
+            btn.textContent = 'รีเซ็ตคะแนน';
+            btn.style.background = '';
+            btn.style.color = '';
+          }, 4000);
+          return;
+        }
+        clearTimeout(revertTimer);
+        const workId = btn.dataset.resetJudge;
+        const w = ctxWorks.find(x=>x.id===workId);
+        btn.textContent = 'กำลังรีเซ็ต...';
+        btn.disabled = true;
+        await resetScoreForJudge(workId, previewJudge);
+        logAudit(ctxGroupId, 'reset_judge_score', `ผู้ดูแลระบบรีเซ็ตคะแนนของ ${judgeLabel(previewJudge)} สำหรับผลงาน "${w ? w.title : workId}"`).catch(()=>{});
+        renderJudgeWorksList();
+      };
+    });
+  }
 }
 
 function renderJudgeScoreForm(){
@@ -3173,14 +3207,23 @@ async function generatePdfReport(){
   let html = `<div class="report-page">
     <h1 class="report-title">รายงานผลการประเมินผลงานวิจัยภาคบรรยาย ประจำปี ${evalYear ? escapeHtml(evalYear) : '2569'}</h1>
     <p class="report-meta">กลุ่ม: ${escapeHtml(ctxGroupName)} &nbsp;·&nbsp; ออกรายงานวันที่ ${dateStr}</p>
-    <table class="report-table">
+    <table class="report-table main-summary-table">
+      <colgroup>
+        <col style="width:9%;">
+        <col style="width:12%;">
+        <col style="width:27%;">
+        <col style="width:11%;">
+        <col style="width:11%;">
+        <col style="width:19%;">
+        <col style="width:11%;">
+      </colgroup>
       <thead><tr><th>ลำดับ</th><th>รหัสผลงานวิจัย</th><th>ผู้นำเสนอ</th><th>คะแนนรวม</th><th>คะแนนภูมิภาค</th><th>คะแนนรวมระดับประเทศ</th><th>ผลการประเมิน</th></tr></thead>
       <tbody>`;
   rows.forEach((r,i)=>{
     html += `<tr>
       <td>${r.nationalTotal!==null ? i+1 : '-'}</td>
       <td>${escapeHtml(r.work.title)}</td>
-      <td>${escapeHtml(r.work.presenter||'-')}</td>
+      <td class="col-presenter">${escapeHtml(r.work.presenter||'-')}</td>
       <td>${r.result.total!==null ? r.result.total : '-'}</td>
       <td>${r.work.regionalScore!=null ? r.work.regionalScore.toFixed(2) : '-'}</td>
       <td>${r.nationalTotal!==null ? r.nationalTotal.toFixed(2) : '-'}</td>
@@ -3194,9 +3237,7 @@ async function generatePdfReport(){
     html += `<div class="report-page">
       <h2 class="report-subtitle">รายละเอียดคะแนน: ${escapeHtml(r.work.title)}</h2>
       <p class="report-meta">ผู้นำเสนอ: ${escapeHtml(r.work.presenter||'-')}</p>`;
-    if(res.resolved && !res.allDone){
-      html += `<p style="color:#0f766e;font-size:13px;">สรุปผลได้แล้วจากกรรมการ ${res.doneCount}/3 คน (มีฐานนิยมตรงกันทุกตัวบ่งชี้)</p>`;
-    } else if(!res.allDone){
+    if(!res.allDone){
       html += `<p style="color:#b45309;font-size:13px;">ให้คะแนนแล้ว ${res.doneCount}/3 กรรมการ — ฐานนิยมและคะแนนของบางตัวบ่งชี้ยังรอกรรมการที่เหลือ</p>`;
     }
     {
@@ -3217,10 +3258,10 @@ async function generatePdfReport(){
       html += `</tbody></table>
       <table class="report-table">
         <tbody>
-          <tr><td>คะแนนรวม (มติกรรมการ)</td><td style="text-align:right">${totalCell}</td></tr>
-          <tr><td>คะแนนระดับภูมิภาค</td><td style="text-align:right">${r.work.regionalScore!=null?r.work.regionalScore.toFixed(2):'-'}</td></tr>
-          <tr><td><strong>สรุปผลคะแนนระดับประเทศ</strong></td><td style="text-align:right"><strong>${r.nationalTotal!==null?r.nationalTotal.toFixed(2):'-'}</strong></td></tr>
-          <tr><td><strong>สรุปผลการประเมินระดับประเทศ</strong></td><td style="text-align:right"><strong>${r.grade || '-'}</strong></td></tr>
+          <tr><td>คะแนนรวม (มติกรรมการ)</td><td style="text-align:center">${totalCell}</td></tr>
+          <tr><td>คะแนนระดับภูมิภาค</td><td style="text-align:center">${r.work.regionalScore!=null?r.work.regionalScore.toFixed(2):'-'}</td></tr>
+          <tr><td><strong>สรุปผลคะแนนระดับประเทศ</strong></td><td style="text-align:center"><strong>${r.nationalTotal!==null?r.nationalTotal.toFixed(2):'-'}</strong></td></tr>
+          <tr><td><strong>สรุปผลการประเมินระดับประเทศ</strong></td><td style="text-align:center"><strong>${r.grade || '-'}</strong></td></tr>
         </tbody>
       </table>`;
     }
@@ -3262,6 +3303,9 @@ async function generatePdfReport(){
   .report-table{ width:100%; border-collapse:collapse; font-size:16pt; margin-bottom:5px; }
   .report-table th, .report-table td{ border:1px solid #999; padding:0px 5px; text-align:left; line-height:1.05; }
   .report-table th{ text-align:center; }
+  .main-summary-table{ table-layout:fixed; }
+  .main-summary-table td{ text-align:center; word-wrap:break-word; }
+  .main-summary-table td.col-presenter{ text-align:left; }
   .sig-block{ margin-top:4px; display:flex; flex-direction:column; gap:2px; }
   .sig-row{ text-align:center; }
   .sig-line-row{ display:flex; align-items:flex-end; justify-content:center; gap:6px; font-size:16pt; margin-bottom:0; }
