@@ -988,7 +988,7 @@ function removeBackgroundAndCropDataURL(dataUrl, padding){
       // Local background map: downscale drastically (erases pen strokes,
       // keeps broad lighting/paper color) then scale back up as a blur.
       const small = document.createElement('canvas');
-      const sw = Math.max(8, Math.round(w/16)), sh = Math.max(8, Math.round(h/16));
+      const sw = Math.max(8, Math.round(w/20)), sh = Math.max(8, Math.round(h/20));
       small.width = sw; small.height = sh;
       small.getContext('2d').drawImage(canvas, 0, 0, sw, sh);
       const bgCanvas = document.createElement('canvas');
