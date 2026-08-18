@@ -961,13 +961,17 @@ function readImageFileToDataURL(file, maxDim){
     reader.readAsDataURL(file);
   });
 }
-/* Removes a light/white background from an uploaded signature photo and crops
+/* Removes a light/plain background from an uploaded signature photo and crops
    tightly to the remaining ink, so uploaded signatures end up similarly sized
-   to drawn ones. Uses a soft brightness threshold (not true AI segmentation):
-   pixels near white become transparent, pixels near black/ink stay opaque,
-   with a smooth ramp in between to avoid jagged edges. Works well for a
-   signature photographed/scanned on plain white paper; may not fully remove
-   colored, shadowed, or uneven backgrounds. */
+   (and dark enough to print clearly) as drawn ones. Uses adaptive thresholding
+   (not true AI segmentation): rather than assuming a single flat background
+   color, it estimates a LOCAL background at every pixel by heavily
+   downscaling the image (which erases thin signature strokes but keeps the
+   broad paper color/lighting) and comparing each pixel to that blurred map —
+   this correctly handles shadows, uneven lighting, and off-white paper.
+   Pixels that differ enough from their local background are kept fully
+   opaque and darkened toward black so faint pen strokes still print clearly.
+   May not fully remove strongly textured or multi-colored backgrounds. */
 function removeBackgroundAndCropDataURL(dataUrl, padding){
   padding = padding==null ? 6 : padding;
   return new Promise((resolve)=>{
@@ -980,15 +984,41 @@ function removeBackgroundAndCropDataURL(dataUrl, padding){
       ctx.drawImage(img, 0, 0, w, h);
       const imgData = ctx.getImageData(0, 0, w, h);
       const data = imgData.data;
-      const LIGHT = 235; // min(r,g,b) at/above this -> treated as background (fully transparent)
-      const DARK = 165;  // min(r,g,b) at/below this -> treated as ink (fully opaque)
+
+      // Local background map: downscale drastically (erases pen strokes,
+      // keeps broad lighting/paper color) then scale back up as a blur.
+      const small = document.createElement('canvas');
+      const sw = Math.max(8, Math.round(w/16)), sh = Math.max(8, Math.round(h/16));
+      small.width = sw; small.height = sh;
+      small.getContext('2d').drawImage(canvas, 0, 0, sw, sh);
+      const bgCanvas = document.createElement('canvas');
+      bgCanvas.width = w; bgCanvas.height = h;
+      const bgCtx = bgCanvas.getContext('2d');
+      bgCtx.imageSmoothingEnabled = true;
+      bgCtx.drawImage(small, 0, 0, w, h);
+      const bgData = bgCtx.getImageData(0, 0, w, h).data;
+
+      // Distance of each pixel's color from its LOCAL background estimate.
+      // Small distance = background (goes transparent); larger distance =
+      // ink (kept fully opaque and darkened so it prints clearly).
+      const DIST_LIGHT = 22; // at/below this distance -> fully background
+      const DIST_FULL = 55;  // at/above this distance -> fully opaque + fully darkened
       for(let i=0; i<data.length; i+=4){
-        const minC = Math.min(data[i], data[i+1], data[i+2]);
-        let alpha;
-        if(minC >= LIGHT) alpha = 0;
-        else if(minC <= DARK) alpha = 255;
-        else alpha = Math.round(255 * (LIGHT - minC) / (LIGHT - DARK));
-        data[i+3] = alpha;
+        const dr=data[i]-bgData[i], dg=data[i+1]-bgData[i+1], db=data[i+2]-bgData[i+2];
+        const dist = Math.sqrt(dr*dr+dg*dg+db*db);
+        let t; // 0 = background, 1 = full ink
+        if(dist <= DIST_LIGHT) t = 0;
+        else if(dist >= DIST_FULL) t = 1;
+        else t = (dist-DIST_LIGHT)/(DIST_FULL-DIST_LIGHT);
+        data[i+3] = t <= 0 ? 0 : 255; // hard opacity: any detected ink prints fully solid
+        if(t > 0){
+          // Darken toward near-black in proportion to how ink-like the pixel
+          // is, so faint/light pen strokes still show up strongly when printed.
+          const darken = 0.35 + t*0.55; // 0.35–0.9 of the way to black
+          data[i]   = Math.round(data[i]   * (1-darken));
+          data[i+1] = Math.round(data[i+1] * (1-darken));
+          data[i+2] = Math.round(data[i+2] * (1-darken));
+        }
       }
       ctx.putImageData(imgData, 0, 0);
       let minX=w, minY=h, maxX=-1, maxY=-1;
