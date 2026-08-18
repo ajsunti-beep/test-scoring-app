@@ -1286,21 +1286,22 @@ function isComplete(levels){
 function computeWorkResult(scores){
   const allDone = JUDGES.every(j=>scores[j] && isComplete(scores[j].levels));
   const doneCount = JUDGES.filter(j=>scores[j] && isComplete(scores[j].levels)).length;
-  if(!allDone){
-    return { allDone:false, doneCount, indicators:[], conflicts:[], total:null };
-  }
   const indicators = [];
   const conflicts = [];
   RUBRIC.forEach(dim=>{
     dim.indicators.forEach(ind=>{
-      const judgeLevels = JUDGES.map(j=>scores[j].levels[ind.id]);
-      const mode = modeOf(judgeLevels);
-      if(mode===null) conflicts.push(ind.id);
-      indicators.push({ id:ind.id, name:ind.name, dimName:dim.name, weight:ind.weight, judgeLevels, mode, score: mode!==null ? mode*ind.weight : null });
+      const judgeLevels = JUDGES.map(j=> (scores[j] && scores[j].levels[ind.id]) ? scores[j].levels[ind.id] : null);
+      let mode = null, score = null;
+      if(allDone){
+        mode = modeOf(judgeLevels);
+        if(mode===null) conflicts.push(ind.id);
+        score = mode!==null ? mode*ind.weight : null;
+      }
+      indicators.push({ id:ind.id, name:ind.name, dimName:dim.name, weight:ind.weight, judgeLevels, mode, score });
     });
   });
-  const total = conflicts.length===0 ? Math.round(indicators.reduce((s,i)=>s+i.score,0)*100)/100 : null;
-  return { allDone:true, doneCount, indicators, conflicts, total };
+  const total = (allDone && conflicts.length===0) ? Math.round(indicators.reduce((s,i)=>s+i.score,0)*100)/100 : null;
+  return { allDone, doneCount, indicators, conflicts, total };
 }
 
 function computeNationalTotal(work, res){
@@ -3560,25 +3561,25 @@ async function renderSummaryTab(){
     const panel = document.getElementById(`detail-${openDetailWorkId}`);
     if(r && panel){
       const res = r.result;
+      const dash = '<span style="color:var(--muted)">-</span>';
+      let dhtml = `<table class="score-detail-table" style="font-size:12px;"><thead><tr><th>ตัวบ่งชี้</th><th>${escapeHtml(judgeLabel(1))}</th><th>${escapeHtml(judgeLabel(2))}</th><th>${escapeHtml(judgeLabel(3))}</th><th>ฐานนิยม</th><th>คะแนน</th></tr></thead><tbody>`;
+      res.indicators.forEach(ind=>{
+        const conflict = res.allDone && ind.mode===null;
+        dhtml += `<tr style="${conflict?'background:var(--red-bg)':''}">
+          <td>${conflict ? '<span class="warn-icon" title="ยังไม่มีฐานนิยม">!</span>' : ''}${ind.id} ${escapeHtml(ind.name)}</td>
+          <td style="text-align:center">${ind.judgeLevels[0]!=null ? ind.judgeLevels[0] : dash}</td>
+          <td style="text-align:center">${ind.judgeLevels[1]!=null ? ind.judgeLevels[1] : dash}</td>
+          <td style="text-align:center">${ind.judgeLevels[2]!=null ? ind.judgeLevels[2] : dash}</td>
+          <td style="text-align:center">${!res.allDone ? '<span style="color:var(--muted)">รอ</span>' : (conflict ? '<span style="color:var(--red);font-weight:600">ไม่มี</span>' : ind.mode)}</td>
+          <td style="text-align:center">${!res.allDone ? '<span style="color:var(--muted)">รอ</span>' : (conflict ? '<span style="color:var(--red)">ต้องหารือ</span>' : ind.score)}</td>
+        </tr>`;
+      });
+      dhtml += `</tbody></table>`;
       if(!res.allDone){
-        panel.innerHTML = `<div style="color:var(--muted)">รอกรรมการให้คะแนนครบ 3 คนก่อนจึงจะสรุปฐานนิยมได้ (ขณะนี้ ${res.doneCount}/3)</div>`;
-      } else {
-        let dhtml = `<table class="score-detail-table" style="font-size:12px;"><thead><tr><th>ตัวบ่งชี้</th><th>${escapeHtml(judgeLabel(1))}</th><th>${escapeHtml(judgeLabel(2))}</th><th>${escapeHtml(judgeLabel(3))}</th><th>ฐานนิยม</th><th>คะแนน</th></tr></thead><tbody>`;
-        res.indicators.forEach(ind=>{
-          const conflict = ind.mode===null;
-          dhtml += `<tr style="${conflict?'background:var(--red-bg)':''}">
-            <td>${conflict ? '<span class="warn-icon" title="ยังไม่มีฐานนิยม">!</span>' : ''}${ind.id} ${escapeHtml(ind.name)}</td>
-            <td style="text-align:center">${ind.judgeLevels[0]}</td>
-            <td style="text-align:center">${ind.judgeLevels[1]}</td>
-            <td style="text-align:center">${ind.judgeLevels[2]}</td>
-            <td style="text-align:center">${conflict ? '<span style="color:var(--red);font-weight:600">ไม่มี</span>' : ind.mode}</td>
-            <td style="text-align:center">${conflict ? '<span style="color:var(--red)">ต้องหารือ</span>' : ind.score}</td>
-          </tr>`;
-        });
-        dhtml += `</tbody></table>`;
-        dhtml += `<div class="detail-row" style="margin-top:8px;"><span>คะแนนรวม</span><span>${res.total!==null ? res.total+' / '+MAX_SCORE : 'รอกรรมการปรับคะแนนตัวบ่งชี้ที่ไม่มีฐานนิยม'}</span></div>`;
-        panel.innerHTML = dhtml;
+        dhtml += `<div style="margin-top:8px;color:var(--muted);font-size:12px;">ให้คะแนนแล้ว ${res.doneCount}/3 คน — คอลัมน์ฐานนิยมและคะแนนจะสรุปได้เมื่อกรรมการให้คะแนนครบทุกคน</div>`;
       }
+      dhtml += `<div class="detail-row" style="margin-top:8px;"><span>คะแนนรวม</span><span>${res.total!==null ? res.total+' / '+MAX_SCORE : (res.allDone ? 'รอกรรมการปรับคะแนนตัวบ่งชี้ที่ไม่มีฐานนิยม' : 'รอให้คะแนนครบ 3 คน')}</span></div>`;
+      panel.innerHTML = dhtml;
     }
   }
 }
