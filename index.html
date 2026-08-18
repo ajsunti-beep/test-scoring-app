@@ -1002,7 +1002,7 @@ function removeBackgroundAndCropDataURL(dataUrl, padding){
       // Small distance = background (goes transparent); larger distance =
       // ink (kept fully opaque and darkened so it prints clearly).
       const DIST_LIGHT = 22; // at/below this distance -> fully background
-      const DIST_FULL = 55;  // at/above this distance -> fully opaque + fully darkened
+      const DIST_FULL = 40;  // at/above this distance -> fully opaque ink
       for(let i=0; i<data.length; i+=4){
         const dr=data[i]-bgData[i], dg=data[i+1]-bgData[i+1], db=data[i+2]-bgData[i+2];
         const dist = Math.sqrt(dr*dr+dg*dg+db*db);
@@ -1010,14 +1010,15 @@ function removeBackgroundAndCropDataURL(dataUrl, padding){
         if(dist <= DIST_LIGHT) t = 0;
         else if(dist >= DIST_FULL) t = 1;
         else t = (dist-DIST_LIGHT)/(DIST_FULL-DIST_LIGHT);
-        data[i+3] = t <= 0 ? 0 : 255; // hard opacity: any detected ink prints fully solid
+        // Color is set to solid black and ONLY alpha carries how ink-like a
+        // pixel is (no extra per-pixel color darkening on top of that). This
+        // keeps the stroke's true width/tone gradient faithful to the
+        // original — thin or lightly-inked areas stay visually thin/faint,
+        // solid dark areas stay solid — rather than both effects compounding
+        // and visually fattening every detected stroke.
+        data[i+3] = Math.round(t*255);
         if(t > 0){
-          // Darken toward near-black in proportion to how ink-like the pixel
-          // is, so faint/light pen strokes still show up strongly when printed.
-          const darken = 0.35 + t*0.55; // 0.35–0.9 of the way to black
-          data[i]   = Math.round(data[i]   * (1-darken));
-          data[i+1] = Math.round(data[i+1] * (1-darken));
-          data[i+2] = Math.round(data[i+2] * (1-darken));
+          data[i] = 0; data[i+1] = 0; data[i+2] = 0;
         }
       }
       ctx.putImageData(imgData, 0, 0);
@@ -3662,8 +3663,9 @@ async function renderSummaryTab(){
           const previewWrap = document.getElementById('sigFilePreviewWrap');
           const toast = document.getElementById('sigToast');
           let originalUploadDataUrl = null;
-          let processedUploadDataUrl = null;
-          let bgRemovalOn = true;
+          let processedUploadDataUrl = null; // computed lazily, only when the checkbox is turned on
+          let bgRemovalOn = false; // default: show the original attached image as-is
+          let bgProcessing = false;
           const updatePreview = ()=>{
             const src = (bgRemovalOn && processedUploadDataUrl) ? processedUploadDataUrl : originalUploadDataUrl;
             uploadedDataUrl = src;
@@ -3671,15 +3673,28 @@ async function renderSummaryTab(){
               <div style="background-image:linear-gradient(45deg,#e5e5e5 25%,transparent 25%),linear-gradient(-45deg,#e5e5e5 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#e5e5e5 75%),linear-gradient(-45deg,transparent 75%,#e5e5e5 75%);background-size:14px 14px;background-position:0 0,0 7px,7px -7px,-7px 0;border:1px solid var(--border);border-radius:8px;padding:8px;display:inline-block;">
                 <img src="${src}" alt="ลายเซ็นที่แนบ" style="max-width:100%;max-height:200px;display:block;margin:0 auto;">
               </div>
-              ${processedUploadDataUrl ? `
-                <label style="display:flex;align-items:center;gap:6px;justify-content:center;margin-top:8px;font-size:12.5px;color:var(--muted);cursor:pointer;">
-                  <input type="checkbox" id="sigBgToggle" ${bgRemovalOn ? 'checked' : ''}>
-                  ลบพื้นหลัง/ครอปให้พอดีอัตโนมัติ
+              ${originalUploadDataUrl ? `
+                <label style="display:flex;align-items:center;gap:6px;justify-content:center;margin-top:8px;font-size:12.5px;color:var(--muted);cursor:${bgProcessing ? 'default' : 'pointer'};">
+                  <input type="checkbox" id="sigBgToggle" ${bgRemovalOn ? 'checked' : ''} ${bgProcessing ? 'disabled' : ''}>
+                  ${bgProcessing ? 'กำลังลบพื้นหลัง...' : 'ลบพื้นหลัง/ครอปให้พอดีอัตโนมัติ'}
                 </label>
               ` : ''}
             `;
             const bgToggle = document.getElementById('sigBgToggle');
-            if(bgToggle) bgToggle.onchange = (e)=>{ bgRemovalOn = e.target.checked; updatePreview(); };
+            if(bgToggle) bgToggle.onchange = async (e)=>{
+              bgRemovalOn = e.target.checked;
+              if(bgRemovalOn && !processedUploadDataUrl){
+                bgProcessing = true;
+                updatePreview();
+                try{
+                  processedUploadDataUrl = await removeBackgroundAndCropDataURL(originalUploadDataUrl);
+                }catch(err){
+                  bgRemovalOn = false;
+                }
+                bgProcessing = false;
+              }
+              updatePreview();
+            };
           };
           const handleFile = async (file)=>{
             toast.style.color = '';
@@ -3688,8 +3703,8 @@ async function renderSummaryTab(){
             previewWrap.innerHTML = `<span style="color:var(--muted);font-size:13px;">กำลังโหลดรูป...</span>`;
             try{
               originalUploadDataUrl = await readImageFileToDataURL(file, 500);
-              processedUploadDataUrl = await removeBackgroundAndCropDataURL(originalUploadDataUrl);
-              bgRemovalOn = true;
+              processedUploadDataUrl = null;
+              bgRemovalOn = false;
               updatePreview();
             }catch(err){
               uploadedDataUrl = null;
