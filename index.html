@@ -3237,9 +3237,6 @@ async function generatePdfReport(){
     html += `<div class="report-page">
       <h2 class="report-subtitle">รายละเอียดคะแนน: ${escapeHtml(r.work.title)}</h2>
       <p class="report-meta">ผู้นำเสนอ: ${escapeHtml(r.work.presenter||'-')}</p>`;
-    if(!res.allDone){
-      html += `<p style="color:#b45309;font-size:13px;">ให้คะแนนแล้ว ${res.doneCount}/3 กรรมการ — ฐานนิยมและคะแนนของบางตัวบ่งชี้ยังรอกรรมการที่เหลือ</p>`;
-    }
     {
       html += `<table class="report-table">
         <thead><tr><th>ตัวบ่งชี้</th><th>น้ำหนัก</th><th>กรรมการ 1</th><th>กรรมการ 2</th><th>กรรมการ 3</th><th>ฐานนิยม</th><th>คะแนน</th></tr></thead><tbody>`;
