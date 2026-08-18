@@ -1118,6 +1118,25 @@ async function loadJudgeSignaturesFor(groupId){
 async function saveJudgeSignaturesFor(groupId, sigs){
   await storage.set(`judgeSignatures:${groupId}`, JSON.stringify(sigs), true);
 }
+async function saveJudgeSignatureAtomic(groupId, judge, sigEntry){
+  // Signatures for all 3 judges of a group live in ONE shared document, so a
+  // plain read-then-write from a browser tab that loaded the document earlier
+  // can clobber a signature another judge saved in the meantime. Use a
+  // Firestore transaction so the merge (read + update + write) is atomic and
+  // always based on the latest server state, never a stale local copy.
+  const docRef = fsDb.collection('kvstore').doc(`judgeSignatures:${groupId}`);
+  const merged = await fsDb.runTransaction(async (tx)=>{
+    const snap = await tx.get(docRef);
+    let current = { 1:null, 2:null, 3:null };
+    if(snap.exists && snap.data().value){
+      try{ current = { 1:null, 2:null, 3:null, ...JSON.parse(snap.data().value) }; }catch(e){}
+    }
+    current[judge] = sigEntry;
+    tx.set(docRef, { value: JSON.stringify(current), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    return current;
+  });
+  return merged;
+}
 async function loadCertifyApprovedFor(groupId){
   try{
     const r = await storage.get(`certifyApproved:${groupId}`, true);
@@ -3572,16 +3591,17 @@ async function renderSummaryTab(){
           confirmBtn.disabled = true;
           confirmBtn.textContent = 'กำลังบันทึก...';
           const prevSignatures = { ...ctxJudgeSignatures };
-          ctxJudgeSignatures[ej] = { signature: dataUrl, at: Date.now() };
+          const newSigEntry = { signature: dataUrl, at: Date.now() };
           try{
             if(navigator.onLine === false){
               throw Object.assign(new Error('offline'), { code:'client/offline' });
             }
-            await withTimeout(
-              saveJudgeSignaturesFor(ctxGroupId, ctxJudgeSignatures),
+            const merged = await withTimeout(
+              saveJudgeSignatureAtomic(ctxGroupId, ej, newSigEntry),
               15000,
               'การบันทึกใช้เวลานานเกินไป'
             );
+            ctxJudgeSignatures = merged;
             logAudit(ctxGroupId, 'sign', `${judgeLabel(ej)} ลงลายมือชื่อรับรองผลการประเมิน (${sigMode==='upload' ? 'แนบไฟล์รูปภาพ' : 'วาดลายเซ็น'})`).catch(()=>{});
             renderSummaryTab();
           }catch(err){
