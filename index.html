@@ -1310,8 +1310,19 @@ async function resetScoresForWork(workId){
 }
 async function loadAllScoresFor(workId){
   const results = {};
-  for(const j of JUDGES){ results[j] = await loadScore(workId, j); }
+  const pairs = await Promise.all(JUDGES.map(async j => [j, await loadScore(workId, j)]));
+  for(const [j, score] of pairs){ results[j] = score; }
   return results;
+}
+/* Loads scores for many works at once (all works × all judges fetched in
+   parallel) instead of awaiting each work/judge one at a time in sequence.
+   This is the main fix for pages getting slower as more works accumulate:
+   sequential awaits meant N works took N round-trips one after another. */
+async function loadAllScoresForWorks(works){
+  const pairs = await Promise.all(works.map(async w => [w.id, await loadAllScoresFor(w.id)]));
+  const map = {};
+  for(const [id, scores] of pairs){ map[id] = scores; }
+  return map;
 }
 
 /* ---------- Google Sheets sync (via Apps Script Web App webhook) ---------- */
@@ -1375,8 +1386,9 @@ function buildSummaryRow(groupName, work, result, nationalTotal, grade){
 async function gatherAllScoreAndSummaryRows(){
   const scoreRows = [];
   const summaryRows = [];
+  const scoresByWork = await loadAllScoresForWorks(ctxWorks);
   for(const w of ctxWorks){
-    const scores = await loadAllScoresFor(w.id);
+    const scores = scoresByWork[w.id];
     JUDGES.forEach(j=>{
       if(scores[j] && isComplete(scores[j].levels)){
         scoreRows.push(buildScoreRow(ctxGroupName, w, judgeLabel(j), scores[j].levels));
@@ -2308,8 +2320,9 @@ async function renderHomeSystemTab(){
           loadAuditLogFor(g.id)
         ]);
         const worksWithScores = [];
+        const scoresByWork = await loadAllScoresForWorks(works);
         for(const w of works){
-          const scores = await loadAllScoresFor(w.id);
+          const scores = scoresByWork[w.id];
           worksWithScores.push({ ...w, scores });
         }
         backup.groups.push({
@@ -2884,8 +2897,9 @@ async function renderWorksList(){
   }
   wrap.innerHTML = `<div style="overflow-x:auto;"><table style="min-width:680px;"><thead><tr><th>รหัสผลงานวิจัย</th><th>ผู้นำเสนอ</th><th>คะแนนระดับภูมิภาค</th><th>สถานะการให้คะแนน</th><th></th></tr></thead><tbody id="worksTbody"></tbody></table></div>`;
   const tbody = document.getElementById('worksTbody');
+  const scoresByWork = await loadAllScoresForWorks(ctxWorks);
   for(const w of ctxWorks){
-    const scores = await loadAllScoresFor(w.id);
+    const scores = scoresByWork[w.id];
     const res = computeWorkResult(scores);
     let statusHtml;
     if(res.resolved){
@@ -3289,12 +3303,10 @@ function renderRubricForm(){
       renderRubricForm();
       return;
     }
-    if(!isComplete(scoreLevels)){
-      toast.style.color = 'var(--red)';
-      toast.textContent = 'กรุณาให้คะแนนครบทุกตัวบ่งชี้ก่อนบันทึก';
-      return;
-    }
     const levelsSnapshot = {...scoreLevels};
+    const filledCount = RUBRIC.reduce((n,dim)=>n+dim.indicators.filter(ind=>levelsSnapshot[ind.id]).length, 0);
+    const totalIndicators = RUBRIC.reduce((n,dim)=>n+dim.indicators.length, 0);
+    const complete = isComplete(levelsSnapshot);
     const original = btn.textContent;
     btn.disabled = true;
     btn.textContent = 'กำลังบันทึก...';
@@ -3308,12 +3320,17 @@ function renderRubricForm(){
         'การบันทึกใช้เวลานานเกินไป'
       );
       lastSavedScoreLevels = levelsSnapshot;
-      toast.style.color = 'var(--green)';
-      toast.textContent = `บันทึกคะแนนของ ${judgeLabel(scoreJudge)} เรียบร้อยแล้ว (รวม ${computeTotal(levelsSnapshot)} คะแนน)`;
+      if(complete){
+        toast.style.color = 'var(--green)';
+        toast.textContent = `บันทึกคะแนนของ ${judgeLabel(scoreJudge)} เรียบร้อยแล้ว (รวม ${computeTotal(levelsSnapshot)} คะแนน)`;
+      } else {
+        toast.style.color = 'var(--orange)';
+        toast.textContent = `บันทึกร่างคะแนนไว้แล้ว (กรอกแล้ว ${filledCount}/${totalIndicators} ตัวบ่งชี้) — กลับมาให้คะแนนต่อได้จนกว่าจะลงลายมือชื่อรับรองผล`;
+      }
       const workNow = ctxWorks.find(w=>w.id===scoreWorkId);
       if(workNow){
         pushRowsToSheets(ctxGroupId, 'Scores', SCORE_ROW_HEADERS, [buildScoreRow(ctxGroupName, workNow, judgeLabel(scoreJudge), levelsSnapshot)]).catch(()=>{});
-        logAudit(ctxGroupId, 'save_score', `${judgeLabel(scoreJudge)} บันทึกคะแนน "${workNow.title}" รวม ${computeTotal(levelsSnapshot)} คะแนน`).catch(()=>{});
+        logAudit(ctxGroupId, 'save_score', `${judgeLabel(scoreJudge)} บันทึก${complete ? '' : 'ร่าง'}คะแนน "${workNow.title}" (${filledCount}/${totalIndicators} ตัวบ่งชี้)${complete ? ` รวม ${computeTotal(levelsSnapshot)} คะแนน` : ''}`).catch(()=>{});
       }
     }catch(err){
       toast.style.color = 'var(--red)';
@@ -3346,8 +3363,9 @@ async function generatePdfReport(){
   const freshCertifyApproved = await loadCertifyApprovedFor(ctxGroupId);
 
   const rows = [];
+  const scoresByWorkPdf = await loadAllScoresForWorks(ctxWorks);
   for(const w of ctxWorks){
-    const scores = await loadAllScoresFor(w.id);
+    const scores = scoresByWorkPdf[w.id];
     const result = computeWorkResult(scores);
     const nationalTotal = computeNationalTotal(w, result);
     const grade = nationalGrade(nationalTotal);
@@ -3505,8 +3523,9 @@ async function renderSummaryTab(){
   ctxCertifyApproved = await loadCertifyApprovedFor(ctxGroupId);
 
   const rows = [];
+  const scoresByWorkSummary = await loadAllScoresForWorks(ctxWorks);
   for(const w of ctxWorks){
-    const scores = await loadAllScoresFor(w.id);
+    const scores = scoresByWorkSummary[w.id];
     const result = computeWorkResult(scores);
     const nationalTotal = computeNationalTotal(w, result);
     const grade = nationalGrade(nationalTotal);
