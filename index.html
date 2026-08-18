@@ -1283,6 +1283,24 @@ function isComplete(levels){
   for(const dim of RUBRIC) for(const ind of dim.indicators) if(!levels[ind.id]) return false;
   return true;
 }
+function computePartialIndicators(scores){
+  // Like computeWorkResult, but computes mode/score per indicator from whichever
+  // judges have scored so far (mode shown once 2 of 3 judges agree). Used for
+  // the downloadable PDF report so it can display data before all 3 judges finish.
+  const indicators = [];
+  RUBRIC.forEach(dim=>{
+    dim.indicators.forEach(ind=>{
+      const judgeLevels = JUDGES.map(j=> (scores[j] && scores[j].levels[ind.id]) ? scores[j].levels[ind.id] : null);
+      const nonNull = judgeLevels.filter(v=>v!=null);
+      const mode = nonNull.length>=2 ? modeOf(nonNull) : null;
+      const score = mode!==null ? mode*ind.weight : null;
+      indicators.push({ id:ind.id, name:ind.name, weight:ind.weight, judgeLevels, mode, score });
+    });
+  });
+  const allDetermined = indicators.every(ind=>ind.score!==null);
+  const partialTotal = allDetermined ? Math.round(indicators.reduce((s,i)=>s+i.score,0)*100)/100 : null;
+  return { indicators, partialTotal };
+}
 function computeWorkResult(scores){
   const allDone = JUDGES.every(j=>scores[j] && isComplete(scores[j].levels));
   const doneCount = JUDGES.filter(j=>scores[j] && isComplete(scores[j].levels)).length;
@@ -3190,26 +3208,28 @@ async function generatePdfReport(){
       <h2 class="report-subtitle">รายละเอียดคะแนน: ${escapeHtml(r.work.title)}</h2>
       <p class="report-meta">ผู้นำเสนอ: ${escapeHtml(r.work.presenter||'-')}</p>`;
     if(!res.allDone){
-      html += `<p>ยังให้คะแนนไม่ครบ 3 กรรมการ (${res.doneCount}/3)</p>`;
-    } else {
+      html += `<p style="color:#b45309;font-size:13px;">ให้คะแนนแล้ว ${res.doneCount}/3 กรรมการ — ฐานนิยมและคะแนนของบางตัวบ่งชี้ยังรอกรรมการที่เหลือ</p>`;
+    }
+    {
+      const partial = computePartialIndicators(r.scores);
       html += `<table class="report-table">
         <thead><tr><th>ตัวบ่งชี้</th><th>น้ำหนัก</th><th>กรรมการ 1</th><th>กรรมการ 2</th><th>กรรมการ 3</th><th>ฐานนิยม</th><th>คะแนน</th></tr></thead><tbody>`;
-      res.indicators.forEach(ind=>{
-        const conflict = ind.mode===null;
+      partial.indicators.forEach(ind=>{
         html += `<tr>
           <td>${ind.id} ${escapeHtml(ind.name)}</td>
           <td style="text-align:center">${ind.weight}</td>
-          <td style="text-align:center">${ind.judgeLevels[0]}</td>
-          <td style="text-align:center">${ind.judgeLevels[1]}</td>
-          <td style="text-align:center">${ind.judgeLevels[2]}</td>
-          <td style="text-align:center">${conflict ? 'ไม่มี' : ind.mode}</td>
-          <td style="text-align:center">${conflict ? '-' : ind.score}</td>
+          <td style="text-align:center">${ind.judgeLevels[0]!=null ? ind.judgeLevels[0] : '-'}</td>
+          <td style="text-align:center">${ind.judgeLevels[1]!=null ? ind.judgeLevels[1] : '-'}</td>
+          <td style="text-align:center">${ind.judgeLevels[2]!=null ? ind.judgeLevels[2] : '-'}</td>
+          <td style="text-align:center">${ind.mode!==null ? ind.mode : 'รอ'}</td>
+          <td style="text-align:center">${ind.score!==null ? ind.score : 'รอ'}</td>
         </tr>`;
       });
+      const totalCell = res.total!==null ? res.total : (partial.partialTotal!==null ? partial.partialTotal : 'รอ');
       html += `</tbody></table>
       <table class="report-table">
         <tbody>
-          <tr><td>คะแนนรวม (มติกรรมการ)</td><td style="text-align:right">${res.total!==null?res.total:'-'}</td></tr>
+          <tr><td>คะแนนรวม (มติกรรมการ)</td><td style="text-align:right">${totalCell}</td></tr>
           <tr><td>คะแนนระดับภูมิภาค</td><td style="text-align:right">${r.work.regionalScore!=null?r.work.regionalScore.toFixed(2):'-'}</td></tr>
           <tr><td><strong>สรุปผลคะแนนระดับประเทศ</strong></td><td style="text-align:right"><strong>${r.nationalTotal!==null?r.nationalTotal.toFixed(2):'-'}</strong></td></tr>
           <tr><td><strong>สรุปผลการประเมินระดับประเทศ</strong></td><td style="text-align:right"><strong>${r.grade || '-'}</strong></td></tr>
