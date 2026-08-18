@@ -1283,43 +1283,30 @@ function isComplete(levels){
   for(const dim of RUBRIC) for(const ind of dim.indicators) if(!levels[ind.id]) return false;
   return true;
 }
-function computePartialIndicators(scores){
-  // Like computeWorkResult, but computes mode/score per indicator from whichever
-  // judges have scored so far (mode shown once 2 of 3 judges agree). Used for
-  // the downloadable PDF report so it can display data before all 3 judges finish.
-  const indicators = [];
-  RUBRIC.forEach(dim=>{
-    dim.indicators.forEach(ind=>{
-      const judgeLevels = JUDGES.map(j=> (scores[j] && scores[j].levels[ind.id]) ? scores[j].levels[ind.id] : null);
-      const nonNull = judgeLevels.filter(v=>v!=null);
-      const mode = nonNull.length>=2 ? modeOf(nonNull) : null;
-      const score = mode!==null ? mode*ind.weight : null;
-      indicators.push({ id:ind.id, name:ind.name, weight:ind.weight, judgeLevels, mode, score });
-    });
-  });
-  const allDetermined = indicators.every(ind=>ind.score!==null);
-  const partialTotal = allDetermined ? Math.round(indicators.reduce((s,i)=>s+i.score,0)*100)/100 : null;
-  return { indicators, partialTotal };
-}
 function computeWorkResult(scores){
-  const allDone = JUDGES.every(j=>scores[j] && isComplete(scores[j].levels));
+  // A work is "resolved" per-indicator as soon as a majority level exists among
+  // whichever judges have scored so far — i.e. 2 of 3 judges agreeing is already
+  // final, since a 3rd vote can never overturn a 2-vote majority. This lets scores
+  // finalize even if one judge is unable to complete their duty.
   const doneCount = JUDGES.filter(j=>scores[j] && isComplete(scores[j].levels)).length;
+  const allDone = doneCount === JUDGES.length;
   const indicators = [];
   const conflicts = [];
   RUBRIC.forEach(dim=>{
     dim.indicators.forEach(ind=>{
       const judgeLevels = JUDGES.map(j=> (scores[j] && scores[j].levels[ind.id]) ? scores[j].levels[ind.id] : null);
-      let mode = null, score = null;
-      if(allDone){
-        mode = modeOf(judgeLevels);
-        if(mode===null) conflicts.push(ind.id);
-        score = mode!==null ? mode*ind.weight : null;
-      }
-      indicators.push({ id:ind.id, name:ind.name, dimName:dim.name, weight:ind.weight, judgeLevels, mode, score });
+      const nonNull = judgeLevels.filter(v=>v!=null);
+      const mode = nonNull.length>=2 ? modeOf(nonNull) : null;
+      // "conflict" = all 3 judges have scored yet no majority exists (genuine tie, needs discussion)
+      const conflict = mode===null && nonNull.length===JUDGES.length;
+      if(conflict) conflicts.push(ind.id);
+      const score = mode!==null ? mode*ind.weight : null;
+      indicators.push({ id:ind.id, name:ind.name, dimName:dim.name, weight:ind.weight, judgeLevels, mode, score, conflict });
     });
   });
-  const total = (allDone && conflicts.length===0) ? Math.round(indicators.reduce((s,i)=>s+i.score,0)*100)/100 : null;
-  return { allDone, doneCount, indicators, conflicts, total };
+  const resolved = indicators.every(ind=>ind.score!==null);
+  const total = resolved ? Math.round(indicators.reduce((s,i)=>s+i.score,0)*100)/100 : null;
+  return { allDone, doneCount, indicators, conflicts, total, resolved };
 }
 
 function computeNationalTotal(work, res){
@@ -2743,12 +2730,12 @@ async function renderWorksList(){
     const scores = await loadAllScoresFor(w.id);
     const res = computeWorkResult(scores);
     let statusHtml;
-    if(!res.allDone){
+    if(res.resolved){
+      statusHtml = `<span class="badge badge-done">${res.allDone ? 'ครบและสรุปได้แล้ว' : `สรุปผลได้แล้ว (${res.doneCount}/3 กรรมการ)`}</span>`;
+    } else if(!res.allDone){
       statusHtml = `<span class="badge badge-pending">${res.doneCount}/3 กรรมการ</span>`;
-    } else if(res.conflicts.length>0){
-      statusHtml = `<span class="badge badge-conflict"><span class="warn-icon" style="margin-right:4px;">!</span>ไม่มีฐานนิยม ${res.conflicts.length} รายการ</span>`;
     } else {
-      statusHtml = `<span class="badge badge-done">ครบและสรุปได้แล้ว</span>`;
+      statusHtml = `<span class="badge badge-conflict"><span class="warn-icon" style="margin-right:4px;">!</span>ไม่มีฐานนิยม ${res.conflicts.length} รายการ</span>`;
     }
     const tr = document.createElement('tr');
     tr.innerHTML = `
@@ -3207,14 +3194,15 @@ async function generatePdfReport(){
     html += `<div class="report-page">
       <h2 class="report-subtitle">รายละเอียดคะแนน: ${escapeHtml(r.work.title)}</h2>
       <p class="report-meta">ผู้นำเสนอ: ${escapeHtml(r.work.presenter||'-')}</p>`;
-    if(!res.allDone){
+    if(res.resolved && !res.allDone){
+      html += `<p style="color:#0f766e;font-size:13px;">สรุปผลได้แล้วจากกรรมการ ${res.doneCount}/3 คน (มีฐานนิยมตรงกันทุกตัวบ่งชี้)</p>`;
+    } else if(!res.allDone){
       html += `<p style="color:#b45309;font-size:13px;">ให้คะแนนแล้ว ${res.doneCount}/3 กรรมการ — ฐานนิยมและคะแนนของบางตัวบ่งชี้ยังรอกรรมการที่เหลือ</p>`;
     }
     {
-      const partial = computePartialIndicators(r.scores);
       html += `<table class="report-table">
         <thead><tr><th>ตัวบ่งชี้</th><th>น้ำหนัก</th><th>กรรมการ 1</th><th>กรรมการ 2</th><th>กรรมการ 3</th><th>ฐานนิยม</th><th>คะแนน</th></tr></thead><tbody>`;
-      partial.indicators.forEach(ind=>{
+      res.indicators.forEach(ind=>{
         html += `<tr>
           <td>${ind.id} ${escapeHtml(ind.name)}</td>
           <td style="text-align:center">${ind.weight}</td>
@@ -3225,7 +3213,7 @@ async function generatePdfReport(){
           <td style="text-align:center">${ind.score!==null ? ind.score : 'รอ'}</td>
         </tr>`;
       });
-      const totalCell = res.total!==null ? res.total : (partial.partialTotal!==null ? partial.partialTotal : 'รอ');
+      const totalCell = res.total!==null ? res.total : 'รอ';
       html += `</tbody></table>
       <table class="report-table">
         <tbody>
@@ -3365,12 +3353,12 @@ async function renderSummaryTab(){
   rows.forEach((r,i)=>{
     const res = r.result;
     let statusCell;
-    if(!res.allDone){
+    if(res.resolved){
+      statusCell = `<span class="badge badge-done">${res.allDone ? 'ครบและมีฐานนิยมทุกตัวบ่งชี้' : `สรุปผลได้แล้ว (${res.doneCount}/3 กรรมการ)`}</span>`;
+    } else if(!res.allDone){
       statusCell = `<span class="badge badge-pending">ให้คะแนนแล้ว ${res.doneCount}/3</span>`;
-    } else if(res.conflicts.length>0){
-      statusCell = `<span class="badge badge-conflict"><span class="warn-icon" style="margin-right:4px;">!</span>ไม่มีฐานนิยม ${res.conflicts.length} ตัวบ่งชี้ · ต้องหารือ</span>`;
     } else {
-      statusCell = `<span class="badge badge-done">ครบและมีฐานนิยมทุกตัวบ่งชี้</span>`;
+      statusCell = `<span class="badge badge-conflict"><span class="warn-icon" style="margin-right:4px;">!</span>ไม่มีฐานนิยม ${res.conflicts.length} ตัวบ่งชี้ · ต้องหารือ</span>`;
     }
     const regionalCell = (r.work.regionalScore!=null) ? r.work.regionalScore.toFixed(2) : '<span style="color:var(--muted)">ยังไม่ระบุ</span>';
     let nationalCell;
@@ -3584,21 +3572,22 @@ async function renderSummaryTab(){
       const dash = '<span style="color:var(--muted)">-</span>';
       let dhtml = `<table class="score-detail-table" style="font-size:12px;"><thead><tr><th>ตัวบ่งชี้</th><th>${escapeHtml(judgeLabel(1))}</th><th>${escapeHtml(judgeLabel(2))}</th><th>${escapeHtml(judgeLabel(3))}</th><th>ฐานนิยม</th><th>คะแนน</th></tr></thead><tbody>`;
       res.indicators.forEach(ind=>{
-        const conflict = res.allDone && ind.mode===null;
-        dhtml += `<tr style="${conflict?'background:var(--red-bg)':''}">
-          <td>${conflict ? '<span class="warn-icon" title="ยังไม่มีฐานนิยม">!</span>' : ''}${ind.id} ${escapeHtml(ind.name)}</td>
+        dhtml += `<tr style="${ind.conflict?'background:var(--red-bg)':''}">
+          <td>${ind.conflict ? '<span class="warn-icon" title="ยังไม่มีฐานนิยม">!</span>' : ''}${ind.id} ${escapeHtml(ind.name)}</td>
           <td style="text-align:center">${ind.judgeLevels[0]!=null ? ind.judgeLevels[0] : dash}</td>
           <td style="text-align:center">${ind.judgeLevels[1]!=null ? ind.judgeLevels[1] : dash}</td>
           <td style="text-align:center">${ind.judgeLevels[2]!=null ? ind.judgeLevels[2] : dash}</td>
-          <td style="text-align:center">${!res.allDone ? '<span style="color:var(--muted)">รอ</span>' : (conflict ? '<span style="color:var(--red);font-weight:600">ไม่มี</span>' : ind.mode)}</td>
-          <td style="text-align:center">${!res.allDone ? '<span style="color:var(--muted)">รอ</span>' : (conflict ? '<span style="color:var(--red)">ต้องหารือ</span>' : ind.score)}</td>
+          <td style="text-align:center">${ind.mode!==null ? ind.mode : (ind.conflict ? '<span style="color:var(--red);font-weight:600">ไม่มี</span>' : '<span style="color:var(--muted)">รอ</span>')}</td>
+          <td style="text-align:center">${ind.score!==null ? ind.score : (ind.conflict ? '<span style="color:var(--red)">ต้องหารือ</span>' : '<span style="color:var(--muted)">รอ</span>')}</td>
         </tr>`;
       });
       dhtml += `</tbody></table>`;
-      if(!res.allDone){
-        dhtml += `<div style="margin-top:8px;color:var(--muted);font-size:12px;">ให้คะแนนแล้ว ${res.doneCount}/3 คน — คอลัมน์ฐานนิยมและคะแนนจะสรุปได้เมื่อกรรมการให้คะแนนครบทุกคน</div>`;
+      if(!res.resolved && !res.allDone){
+        dhtml += `<div style="margin-top:8px;color:var(--muted);font-size:12px;">ให้คะแนนแล้ว ${res.doneCount}/3 คน — ตัวบ่งชี้ที่กรรมการยังให้คะแนนไม่ตรงกันจะรอฐานนิยมเมื่อกรรมการที่เหลือให้คะแนน</div>`;
+      } else if(res.resolved && !res.allDone){
+        dhtml += `<div style="margin-top:8px;color:var(--green);font-size:12px;">สรุปผลได้แล้วจากกรรมการ ${res.doneCount}/3 คน (มีฐานนิยมตรงกันทุกตัวบ่งชี้)</div>`;
       }
-      dhtml += `<div class="detail-row" style="margin-top:8px;"><span>คะแนนรวม</span><span>${res.total!==null ? res.total+' / '+MAX_SCORE : (res.allDone ? 'รอกรรมการปรับคะแนนตัวบ่งชี้ที่ไม่มีฐานนิยม' : 'รอให้คะแนนครบ 3 คน')}</span></div>`;
+      dhtml += `<div class="detail-row" style="margin-top:8px;"><span>คะแนนรวม</span><span>${res.total!==null ? res.total+' / '+MAX_SCORE : (res.conflicts.length>0 ? 'รอกรรมการปรับคะแนนตัวบ่งชี้ที่ไม่มีฐานนิยม' : `รอกรรมการ (${res.doneCount}/3)`)}</span></div>`;
       panel.innerHTML = dhtml;
     }
   }
