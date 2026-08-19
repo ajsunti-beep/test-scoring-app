@@ -961,17 +961,143 @@ function readImageFileToDataURL(file, maxDim){
     reader.readAsDataURL(file);
   });
 }
+/* ---------- signature photo cleanup: helper functions (ported from the
+   tested "ระบบระดับภูมิภาค" implementation) ---------- */
+/* Cheap approximate Gaussian blur via a separable sliding-window box blur
+   (two passes horizontal+vertical, run twice) — used to estimate the LOCAL
+   background tone under uneven lighting/shadow, without any external
+   image-processing library. O(w*h) regardless of radius. */
+function sigBoxBlur1D(src, w, h, radius, horizontal){
+  const out = new Float32Array(w*h);
+  const size = radius*2+1;
+  if(horizontal){
+    for(let y=0; y<h; y++){
+      const rowOff = y*w;
+      let sum = 0;
+      for(let x=-radius; x<=radius; x++){
+        const xi = Math.min(w-1, Math.max(0, x));
+        sum += src[rowOff+xi];
+      }
+      for(let x=0; x<w; x++){
+        out[rowOff+x] = sum/size;
+        const xOut = Math.max(0, x-radius);
+        const xIn = Math.min(w-1, x+radius+1);
+        sum += src[rowOff+xIn] - src[rowOff+xOut];
+      }
+    }
+  } else {
+    for(let x=0; x<w; x++){
+      let sum = 0;
+      for(let y=-radius; y<=radius; y++){
+        const yi = Math.min(h-1, Math.max(0, y));
+        sum += src[yi*w+x];
+      }
+      for(let y=0; y<h; y++){
+        out[y*w+x] = sum/size;
+        const yOut = Math.max(0, y-radius);
+        const yIn = Math.min(h-1, y+radius+1);
+        sum += src[yIn*w+x] - src[yOut*w+x];
+      }
+    }
+  }
+  return out;
+}
+function sigBoxBlur2D(src, w, h, radius, passes){
+  passes = passes || 2;
+  let cur = src;
+  for(let p=0; p<passes; p++){
+    cur = sigBoxBlur1D(cur, w, h, radius, true);
+    cur = sigBoxBlur1D(cur, w, h, radius, false);
+  }
+  return cur;
+}
+/* Percentile of a value array via a 256-bucket brightness histogram — much
+   faster than sorting the full pixel array for a typical signature photo. */
+function sigPercentile(values, pct){
+  const hist = new Array(256).fill(0);
+  for(let i=0; i<values.length; i++){
+    hist[Math.min(255, Math.max(0, Math.round(values[i])))]++;
+  }
+  const target = values.length * pct / 100;
+  let cum = 0;
+  for(let v=0; v<256; v++){
+    cum += hist[v];
+    if(cum >= target) return v;
+  }
+  return 255;
+}
+function sigMedianFilter3x3(src, w, h){
+  const out = new Float32Array(w*h);
+  const buf = new Float32Array(9);
+  for(let y=0; y<h; y++){
+    for(let x=0; x<w; x++){
+      let k = 0;
+      for(let dy=-1; dy<=1; dy++){
+        for(let dx=-1; dx<=1; dx++){
+          const xx = Math.min(w-1, Math.max(0, x+dx));
+          const yy = Math.min(h-1, Math.max(0, y+dy));
+          buf[k++] = src[yy*w+xx];
+        }
+      }
+      out[y*w+x] = Array.from(buf).sort((a,b)=>a-b)[4];
+    }
+  }
+  return out;
+}
+/* Connected-component labeling (8-connectivity) via iterative flood fill —
+   used to tell a real pen/pencil stroke (one solidly-dark connected blob)
+   apart from paper grain (many tiny scattered blobs) or a photo shadow
+   (a large but faint blob). Iterative (stack-based), not recursive. */
+function sigLabelComponents(mask, w, h){
+  const labels = new Int32Array(w*h);
+  let nextLabel = 0;
+  const sizes = [];
+  const stack = new Int32Array(w*h);
+  for(let start=0; start<w*h; start++){
+    if(!mask[start] || labels[start]!==0) continue;
+    nextLabel++;
+    let sp = 0;
+    stack[sp++] = start;
+    labels[start] = nextLabel;
+    let size = 0;
+    while(sp>0){
+      const p = stack[--sp];
+      size++;
+      const x = p % w, y = (p / w) | 0;
+      for(let dy=-1; dy<=1; dy++){
+        for(let dx=-1; dx<=1; dx++){
+          if(dx===0 && dy===0) continue;
+          const nx = x+dx, ny = y+dy;
+          if(nx<0 || nx>=w || ny<0 || ny>=h) continue;
+          const np = ny*w+nx;
+          if(mask[np] && labels[np]===0){
+            labels[np] = nextLabel;
+            stack[sp++] = np;
+          }
+        }
+      }
+    }
+    sizes[nextLabel] = size;
+  }
+  return { labels, sizes, count: nextLabel };
+}
 /* Removes a light/plain background from an uploaded signature photo and crops
-   tightly to the remaining ink, so uploaded signatures end up similarly sized
-   (and dark enough to print clearly) as drawn ones. Uses adaptive thresholding
-   (not true AI segmentation): rather than assuming a single flat background
-   color, it estimates a LOCAL background at every pixel by heavily
-   downscaling the image (which erases thin signature strokes but keeps the
-   broad paper color/lighting) and comparing each pixel to that blurred map —
-   this correctly handles shadows, uneven lighting, and off-white paper.
-   Pixels that differ enough from their local background are kept fully
-   opaque and darkened toward black so faint pen strokes still print clearly.
-   May not fully remove strongly textured or multi-colored backgrounds. */
+   tightly to the remaining ink. Adapts automatically to the photo ("triage"):
+     - faint pencil ink (narrow brightness gap vs. paper) needs a stronger
+       gamma boost or the stroke barely shows up;
+     - uneven lighting / a soft shadow across the paper, OR very faint ink,
+       both need the local-background-flatten path (divide out a blurred
+       estimate of the local paper tone) — a plain global color-distance
+       threshold still lets a smooth shadow blob survive as visible alpha,
+       and with faint ink the same global stretch amplifies ordinary paper
+       grain into visible noise across the whole photo.
+   After thresholding, small noise specks AND large-but-faint shadow blobs
+   are both dropped via connected-component filtering: a real stroke is a
+   blob that's both reasonably sized AND solidly dark on average — paper
+   grain fails the size test, a soft shadow fails the darkness test.
+   Same external contract as before (dataUrl + padding -> Promise<dataUrl>)
+   so the calling UI needs no changes; falls back to returning the original
+   dataUrl untouched if the image fails to load, exactly as before. */
 function removeBackgroundAndCropDataURL(dataUrl, padding){
   padding = padding==null ? 6 : padding;
   return new Promise((resolve)=>{
@@ -984,96 +1110,91 @@ function removeBackgroundAndCropDataURL(dataUrl, padding){
       ctx.drawImage(img, 0, 0, w, h);
       const imgData = ctx.getImageData(0, 0, w, h);
       const data = imgData.data;
+      const n = w*h;
 
-      // Local background map: downscale drastically (erases pen strokes,
-      // keeps broad lighting/paper color) then scale back up as a blur.
-      const small = document.createElement('canvas');
-      const sw = Math.max(8, Math.round(w/20)), sh = Math.max(8, Math.round(h/20));
-      small.width = sw; small.height = sh;
-      small.getContext('2d').drawImage(canvas, 0, 0, sw, sh);
-      const bgCanvas = document.createElement('canvas');
-      bgCanvas.width = w; bgCanvas.height = h;
-      const bgCtx = bgCanvas.getContext('2d');
-      bgCtx.imageSmoothingEnabled = true;
-      bgCtx.drawImage(small, 0, 0, w, h);
-      const bgData = bgCtx.getImageData(0, 0, w, h).data;
+      const lum = new Float32Array(n);
+      for(let p=0, i=0; p<n; p++, i+=4){
+        lum[p] = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
+      }
 
-      // Distance of each pixel's color from its LOCAL background estimate.
-      // Small distance = background (goes transparent); larger distance =
-      // ink (kept fully opaque and darkened so it prints clearly).
-      const DIST_LIGHT = 22; // at/below this distance -> fully background
-      const DIST_FULL = 40;  // at/above this distance -> fully opaque ink
-      for(let i=0; i<data.length; i+=4){
-        const dr=data[i]-bgData[i], dg=data[i+1]-bgData[i+1], db=data[i+2]-bgData[i+2];
-        const dist = Math.sqrt(dr*dr+dg*dg+db*db);
-        let t; // 0 = background, 1 = full ink
-        if(dist <= DIST_LIGHT) t = 0;
-        else if(dist >= DIST_FULL) t = 1;
-        else t = (dist-DIST_LIGHT)/(DIST_FULL-DIST_LIGHT);
-        // Color is set to solid black and ONLY alpha carries how ink-like a
-        // pixel is (no extra per-pixel color darkening on top of that). This
-        // keeps the stroke's true width/tone gradient faithful to the
-        // original — thin or lightly-inked areas stay visually thin/faint,
-        // solid dark areas stay solid — rather than both effects compounding
-        // and visually fattening every detected stroke.
-        data[i+3] = Math.round(t*255);
-        if(t > 0){
-          data[i] = 0; data[i+1] = 0; data[i+2] = 0;
+      const bgLum90 = sigPercentile(lum, 90);
+      const inkLum1 = sigPercentile(lum, 1);
+      const inkBgGap = bgLum90 - inkLum1;
+      const faintInk = inkBgGap < 80;
+      const gamma = faintInk ? 0.5 : 0.65;
+
+      // เช็คแสงไม่สม่ำเสมอ "ทั่วภาพ" ไม่ใช่แค่ขอบ (เงา/แสงเอียงอาจอยู่กลางภาพ)
+      const probeRadius = Math.max(3, Math.round(Math.min(w, h) * 0.12));
+      const bgProbe = sigBoxBlur2D(lum, w, h, probeRadius, 2);
+      const bgProbeMedian = sigPercentile(bgProbe, 50);
+      let bgLikeSum = 0, bgLikeCount = 0;
+      for(let i=0; i<n; i++){ if(bgProbe[i] > bgProbeMedian){ bgLikeSum += bgProbe[i]; bgLikeCount++; } }
+      const bgLikeMean = bgLikeSum / Math.max(1, bgLikeCount);
+      let bgVarSum = 0;
+      for(let i=0; i<n; i++){ if(bgProbe[i] > bgProbeMedian){ const d = bgProbe[i]-bgLikeMean; bgVarSum += d*d; } }
+      const bgSpread = Math.sqrt(bgVarSum / Math.max(1, bgLikeCount));
+      const unevenLighting = bgSpread > 12;
+
+      // หมึกจางมาก (ช่องว่าง<20) ก็ต้องใช้ local-bg flatten เหมือนกัน แม้แสงจะดูสม่ำเสมอ
+      // เพราะการ stretch contrast แบบ global จะขยาย noise เกรนกระดาษธรรมดาจนเห็นได้ชัด
+      const useLocalBg = unevenLighting || inkBgGap < 20;
+
+      let alpha;
+      if(useLocalBg){
+        const flat = new Float32Array(n);
+        for(let i=0; i<n; i++) flat[i] = Math.min(255, Math.max(0, (lum[i] / Math.max(1, bgProbe[i])) * 255));
+        const bgF = sigPercentile(flat, 92);
+        const inkF = sigPercentile(flat, 0.5);
+        const span = Math.max(bgF - inkF, 1);
+        alpha = new Float32Array(n);
+        for(let i=0; i<n; i++){
+          const norm = Math.min(1, Math.max(0, (bgF - flat[i]) / span));
+          alpha[i] = Math.pow(norm, gamma) * 255;
         }
+      } else {
+        const span = Math.max(bgLum90 - inkLum1, 1);
+        alpha = new Float32Array(n);
+        for(let i=0; i<n; i++){
+          const norm = Math.min(1, Math.max(0, (bgLum90 - lum[i]) / span));
+          alpha[i] = Math.pow(norm, gamma) * 255;
+        }
+      }
+
+      // denoise: median filter + noise floor, แล้ว rescale กลับให้เต็ม 0-255
+      alpha = sigMedianFilter3x3(alpha, w, h);
+      const noiseFloor = 60;
+      let maxA = 0;
+      for(let i=0; i<n; i++){ if(alpha[i] < noiseFloor) alpha[i] = 0; if(alpha[i] > maxA) maxA = alpha[i]; }
+      if(maxA > 0){
+        for(let i=0; i<n; i++) alpha[i] = Math.min(255, Math.max(0, (alpha[i]-noiseFloor)/(255-noiseFloor)*255));
+      }
+
+      // connected-component filtering: ตัดทั้ง noise เม็ดเล็กและเงาก้อนใหญ่ที่จางกว่าหมึกจริง
+      const mask = new Uint8Array(n);
+      for(let i=0; i<n; i++) mask[i] = alpha[i] > 20 ? 1 : 0;
+      const { labels, count } = sigLabelComponents(mask, w, h);
+      const alphaSum = new Array(count+1).fill(0);
+      const compSize = new Array(count+1).fill(0);
+      for(let i=0; i<n; i++){
+        const lbl = labels[i];
+        if(lbl>0){ alphaSum[lbl] += alpha[i]; compSize[lbl]++; }
+      }
+      const minSize = Math.max(50, Math.round(0.0018 * n));
+      const minMeanAlpha = 100; // หมึกจริงเข้มสม่ำเสมอ, เงา/noise จะจางกว่านี้เฉลี่ย
+      const keep = new Uint8Array(count+1);
+      for(let lbl=1; lbl<=count; lbl++){
+        const meanA = alphaSum[lbl] / compSize[lbl];
+        if(compSize[lbl] >= minSize && meanA >= minMeanAlpha) keep[lbl] = 1;
+      }
+      for(let i=0; i<n; i++){ if(!keep[labels[i]]) alpha[i] = 0; }
+
+      // เขียนกลับเป็นหมึกทึบสีเข้ม (ให้พิมพ์/แสดงผลชัดเจน) alpha ตามที่คำนวณ
+      for(let p=0, i=0; p<n; p++, i+=4){
+        data[i] = 0; data[i+1] = 0; data[i+2] = 0;
+        data[i+3] = Math.round(alpha[p]);
       }
       ctx.putImageData(imgData, 0, 0);
 
-      // Discard small/isolated speckles (JPEG noise, paper dust, ink shadow
-      // blobs near a pen-lift point) that passed the color threshold but
-      // aren't really part of the signature: find connected blobs of opaque
-      // pixels, then keep only ones that are a substantial fraction of the
-      // largest blob's size — genuine separate strokes (an underline, a
-      // dot, a second letter) are normally a meaningful size, while leftover
-      // noise/shadow blobs tend to be small even when they sit right next
-      // to a real stroke, so position alone can't reliably tell them apart.
-      (function denoise(){
-        const total = w*h;
-        const visited = new Uint8Array(total);
-        const blobs = [];
-        for(let sy=0; sy<h; sy++){
-          for(let sx=0; sx<w; sx++){
-            const sp = sy*w+sx;
-            if(visited[sp] || data[sp*4+3] <= 10) continue;
-            const stack = [sp];
-            visited[sp] = 1;
-            let count=0;
-            const pixels = [];
-            while(stack.length){
-              const cur = stack.pop();
-              const cx = cur % w, cy = (cur / w) | 0;
-              count++;
-              pixels.push(cur);
-              for(let dy=-1; dy<=1; dy++){
-                for(let dx=-1; dx<=1; dx++){
-                  if(dx===0 && dy===0) continue;
-                  const nx=cx+dx, ny=cy+dy;
-                  if(nx<0||nx>=w||ny<0||ny>=h) continue;
-                  const np = ny*w+nx;
-                  if(!visited[np] && data[np*4+3] > 10){
-                    visited[np] = 1;
-                    stack.push(np);
-                  }
-                }
-              }
-            }
-            blobs.push({ pixels, count });
-          }
-        }
-        if(blobs.length <= 1) return;
-        blobs.sort((a,b)=> b.count - a.count);
-        const minKeep = Math.max(30, Math.round(blobs[0].count * 0.15));
-        for(let bi=1; bi<blobs.length; bi++){
-          const b = blobs[bi];
-          if(b.count >= minKeep) continue;
-          for(const p of b.pixels){ data[p*4+3] = 0; }
-        }
-      })();
-      ctx.putImageData(imgData, 0, 0);
       let minX=w, minY=h, maxX=-1, maxY=-1;
       for(let y=0; y<h; y++){
         for(let x=0; x<w; x++){
