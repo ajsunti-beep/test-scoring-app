@@ -1126,18 +1126,18 @@ function removeBackgroundAndCropDataURL(dataUrl, padding){
       // เช็คแสงไม่สม่ำเสมอ "ทั่วภาพ" ไม่ใช่แค่ขอบ (เงา/แสงเอียงอาจอยู่กลางภาพ)
       const probeRadius = Math.max(3, Math.round(Math.min(w, h) * 0.12));
       const bgProbe = sigBoxBlur2D(lum, w, h, probeRadius, 2);
-      const bgProbeMedian = sigPercentile(bgProbe, 50);
-      let bgLikeSum = 0, bgLikeCount = 0;
-      for(let i=0; i<n; i++){ if(bgProbe[i] > bgProbeMedian){ bgLikeSum += bgProbe[i]; bgLikeCount++; } }
-      const bgLikeMean = bgLikeSum / Math.max(1, bgLikeCount);
-      let bgVarSum = 0;
-      for(let i=0; i<n; i++){ if(bgProbe[i] > bgProbeMedian){ const d = bgProbe[i]-bgLikeMean; bgVarSum += d*d; } }
-      const bgSpread = Math.sqrt(bgVarSum / Math.max(1, bgLikeCount));
-      const unevenLighting = bgSpread > 12;
-
       // หมึกจางมาก (ช่องว่าง<20) ก็ต้องใช้ local-bg flatten เหมือนกัน แม้แสงจะดูสม่ำเสมอ
       // เพราะการ stretch contrast แบบ global จะขยาย noise เกรนกระดาษธรรมดาจนเห็นได้ชัด
-      const useLocalBg = unevenLighting || inkBgGap < 20;
+      //
+      // (หมายเหตุ: เดิมเคยลองใช้ global threshold เมื่อ unevenLighting=false และ inkBgGap>=20
+      // แต่พบเคสจริงที่พลาด — ภาพถ่ายกระดาษที่มีรอยตัวอักษรพิมพ์ทะลุมาจากด้านหลังเป็นบริเวณ
+      // กว้างแต่จาง (ทำให้ bgSpread ที่วัดจากพิกเซล "สว่างกว่า median" เท่านั้นต่ำเกินจริง เพราะ
+      // บริเวณรอยเปื้อนถูกกรองออกจากการคำนวณไปเองตั้งแต่แรกในฐานะพิกเซลที่มืดกว่า median)
+      // ผลคือ global threshold ดึงรอยเปื้อนนั้นติดมาเป็นเงาปนกับลายเซ็นจริง ในขณะที่ local-bg
+      // flatten แก้ปัญหานี้ได้ตรงจุดกว่ามาก (ปรับพื้นหลังท้องถิ่นให้เรียบก่อน จึงตัดรอยเปื้อนกว้างๆ
+      // ออกไปเองโดยธรรมชาติ โดยไม่กระทบเส้นหมึกจริงที่มีคอนทราสต์เฉพาะจุดสูงกว่าเสมอ) จึงตัดสินใจ
+      // ใช้ local-bg flatten กับทุกภาพเสมอ ไม่ต้องเสี่ยงพึ่ง heuristic แยกกรณีที่อาจพลาดแบบนี้อีก
+      const useLocalBg = true;
 
       let alpha;
       if(useLocalBg){
@@ -1170,21 +1170,46 @@ function removeBackgroundAndCropDataURL(dataUrl, padding){
       }
 
       // connected-component filtering: ตัดทั้ง noise เม็ดเล็กและเงาก้อนใหญ่ที่จางกว่าหมึกจริง
+      // ขั้นที่ 1: ตัดสินใจ "เก็บ/ทิ้งทั้งก้อน" โดยรวมพิกเซลแบบหลวม (alpha>20) เป็นก้อนเดียวกัน
+      // (ต้องใช้ threshold หลวมตรงนี้ ไม่ใช่เข้ม — ถ้าใช้ threshold เข้มในการรวมก้อนตั้งแต่แรก
+      // จะทำให้ทุกพิกเซลในก้อนที่รอดมาถึงจุดนี้ "เข้มอยู่แล้วโดยนิยาม" ทำให้เกณฑ์ p90 ด้านล่าง
+      // ตรวจจับเงาไม่ได้ผลอีกต่อไป เพราะกลุ่มตัวอย่างที่ทดสอบถูกกรองเอาไว้ล่วงหน้าแล้ว)
       const mask = new Uint8Array(n);
       for(let i=0; i<n; i++) mask[i] = alpha[i] > 20 ? 1 : 0;
       const { labels, count } = sigLabelComponents(mask, w, h);
-      const alphaSum = new Array(count+1).fill(0);
       const compSize = new Array(count+1).fill(0);
+      // ฮิสโตแกรม alpha แยกต่อ blob (256 ระดับ) ใช้หา percentile ต่อก้อนแบบเร็ว
+      // โดยไม่ต้อง sort พิกเซลทั้งหมดของแต่ละก้อน
+      const blobHist = Array.from({length: count+1}, () => new Uint32Array(256));
       for(let i=0; i<n; i++){
         const lbl = labels[i];
-        if(lbl>0){ alphaSum[lbl] += alpha[i]; compSize[lbl]++; }
+        if(lbl>0){
+          compSize[lbl]++;
+          blobHist[lbl][Math.min(255, Math.max(0, Math.round(alpha[i])))]++;
+        }
       }
-      const minSize = Math.max(50, Math.round(0.0018 * n));
-      const minMeanAlpha = 100; // หมึกจริงเข้มสม่ำเสมอ, เงา/noise จะจางกว่านี้เฉลี่ย
+      const minSize = Math.max(50, Math.round(0.0014 * n));
+      const minP90Alpha = 140;
+      // เกณฑ์นี้เช็คว่า "ก้อนนี้มีแกนหมึกทึบจริงอยู่บ้างไหม" (p90 ของ alpha ในก้อน)
+      // แทนที่จะเช็คค่าเฉลี่ยทั้งก้อน — ค่าเฉลี่ยใช้ไม่ได้กับลายเซ็นที่เป็นเส้นวนต่อกัน
+      // เป็นก้อนใหญ่ก้อนเดียว (เช่น ปากกาน้ำเงินอ่อน) เพราะส่วนเส้นบางๆ/ปลายเส้นจาง
+      // ในก้อนเดียวกันจะดึงค่าเฉลี่ยทั้งก้อนลงมาต่ำกว่าเกณฑ์ ทั้งที่แกนกลางเส้นเข้มจริง
+      // p90 ตรวจแค่ว่ามีพิกเซลส่วนที่เข้มจริงอยู่บ้าง (ไม่สนใจส่วนบาง/จางที่เหลือ) จึงแยก
+      // หมึกจริงออกจากเงา/noise ได้แม่นยำกว่า (ยืนยันด้วยภาพทดสอบจริงหลายแบบแล้ว)
+      //
+      // (หมายเหตุ: เคยลองเพิ่มขั้นตอน "หาแกนเข้มจริงแล้วขยาย (dilate) กลับ" เพื่อตัดเงาที่ติด
+      // มากับก้อนที่เก็บไว้ออกไปอีกที แต่พบว่ามันตัดปลายเส้นที่จางค่อยๆ ตามธรรมชาติ (เช่นตอน
+      // ปากกายกออกจากกระดาษ) ทิ้งไปด้วย เพราะปลายเส้นแบบนั้นไม่มี "แกนเข้ม" ให้ dilate ไปถึง
+      // — ปัญหาเงาที่แท้จริงแก้ได้ดีกว่าด้วยการบังคับใช้ local-bg flatten ข้างบนแทน จึงตัดขั้น
+      // ตอนนี้ออก กลับไปใช้ "เก็บทั้งก้อน หรือทิ้งทั้งก้อน" แบบง่ายๆ ตามเกณฑ์ p90 พอ)
       const keep = new Uint8Array(count+1);
       for(let lbl=1; lbl<=count; lbl++){
-        const meanA = alphaSum[lbl] / compSize[lbl];
-        if(compSize[lbl] >= minSize && meanA >= minMeanAlpha) keep[lbl] = 1;
+        if(compSize[lbl] < minSize) continue;
+        const hist = blobHist[lbl];
+        const target = compSize[lbl] * 0.9;
+        let cum = 0, p90 = 255;
+        for(let v=0; v<256; v++){ cum += hist[v]; if(cum >= target){ p90 = v; break; } }
+        if(p90 >= minP90Alpha) keep[lbl] = 1;
       }
       for(let i=0; i<n; i++){ if(!keep[labels[i]]) alpha[i] = 0; }
 
