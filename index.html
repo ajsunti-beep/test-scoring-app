@@ -769,6 +769,7 @@ let scoreJudge = 1;
 let scoreWorkId = null;
 let scoreLevels = {};
 let lastSavedScoreLevels = null;
+let formLoadedSavedAt = null;
 /* Tracks whether the score form has unsaved picks — used to warn before the
    picks get lost silently (closing the tab, or tapping a back link) since the
    level-picker buttons only update in-memory state until "บันทึกคะแนน" is pressed. */
@@ -1541,11 +1542,11 @@ function renderIdentityBadge(){
   } else if(previewJudge){
     badge.innerHTML = `<span>กำลังดูตัวอย่าง · ${escapeHtml(judgeLabel(previewJudge))}</span> <a href="#" id="exitPreviewLink">กลับสู่หน้าผู้ดูแลระบบ</a>`;
   } else if(authUser && isVisitorUser()){
-    badge.innerHTML = `<span>ผู้เยี่ยมชม: ${escapeHtml(displayNameForEmail(authUser.email))}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
+    badge.innerHTML = `<a href="https://ajsunti-beep.github.io/khurusapha-research-test/landing.html" id="backToLandingLink">← หน้าหลัก</a> <span>ผู้เยี่ยมชม: ${escapeHtml(displayNameForEmail(authUser.email))}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
   } else if(adminSelectedGroupId && authUser){
-    badge.innerHTML = `<span>${escapeHtml(displayNameForEmail(authUser.email))} · กลุ่ม ${escapeHtml(ctxGroupName)}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
+    badge.innerHTML = `<a href="https://ajsunti-beep.github.io/khurusapha-research-test/landing.html" id="backToLandingLink">← หน้าหลัก</a> <span>${escapeHtml(displayNameForEmail(authUser.email))} · กลุ่ม ${escapeHtml(ctxGroupName)}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
   } else if(authUser){
-    badge.innerHTML = `<span>ผู้ดูแลระบบ: ${escapeHtml(displayNameForEmail(authUser.email))}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
+    badge.innerHTML = `<a href="https://ajsunti-beep.github.io/khurusapha-research-test/landing.html" id="backToLandingLink">← หน้าหลัก</a> <span>ผู้ดูแลระบบ: ${escapeHtml(displayNameForEmail(authUser.email))}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
   } else {
     badge.innerHTML = '';
   }
@@ -1576,13 +1577,23 @@ function renderLoginForm(prefillEmail){
       <input type="text" id="loginEmail" placeholder="เช่น admin1" autocomplete="username" value="${escapeHtml(prefillEmail||'')}">
       <div style="height:10px;"></div>
       <label class="field-label">รหัสผ่าน</label>
-      <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password">
+      <div style="position:relative;">
+        <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password" style="padding-right:64px;">
+        <button type="button" id="toggleLoginPw" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--blue-2);font-size:12.5px;font-family:inherit;cursor:pointer;padding:4px 6px;">แสดง</button>
+      </div>
       <a href="#" class="login-forgot-link" id="forgotPasswordLink">ลืมรหัสผ่าน?</a>
       <div style="margin-top:16px;text-align:center;">
         <button class="btn btn-primary" id="loginBtn" style="width:100%;">เข้าสู่ระบบ</button>
       </div>
     </div>
   `;
+  const toggleLoginPw = document.getElementById('toggleLoginPw');
+  const loginPasswordInput = document.getElementById('loginPassword');
+  toggleLoginPw.onclick = ()=>{
+    const showing = loginPasswordInput.type === 'text';
+    loginPasswordInput.type = showing ? 'password' : 'text';
+    toggleLoginPw.textContent = showing ? 'แสดง' : 'ซ่อน';
+  };
   const doLogin = async ()=>{
     const rawInput = cleanInput(document.getElementById('loginEmail').value);
     const password = document.getElementById('loginPassword').value;
@@ -3245,6 +3256,7 @@ async function loadFormState(){
   const existing = await loadScore(scoreWorkId, scoreJudge);
   scoreLevels = existing ? {...existing.levels} : {};
   lastSavedScoreLevels = {...scoreLevels};
+  formLoadedSavedAt = existing ? (existing.savedAt || null) : null;
   renderRubricForm();
 }
 
@@ -3326,17 +3338,39 @@ function renderRubricForm(){
     const complete = isComplete(levelsSnapshot);
     const original = btn.textContent;
     btn.disabled = true;
-    btn.textContent = 'กำลังบันทึก...';
+    btn.textContent = 'กำลังตรวจสอบ...';
     try{
       if(navigator.onLine === false){
         throw Object.assign(new Error('offline'), { code:'client/offline' });
       }
+      // ป้องกันคะแนนหาย: เช็คว่ามีการบันทึกจากอุปกรณ์/แท็บอื่นเข้ามาแทรกระหว่างที่เปิดฟอร์มนี้ค้างไว้หรือไม่
+      // ก่อนเขียนทับ (เช่น กรรมการคนเดียวกันเปิด 2 อุปกรณ์พร้อมกัน)
+      const latest = await withTimeout(loadScore(scoreWorkId, scoreJudge), 15000, 'ตรวจสอบข้อมูลล่าสุดใช้เวลานานเกินไป');
+      const latestSavedAt = latest ? (latest.savedAt || null) : null;
+      if(latestSavedAt !== formLoadedSavedAt){
+        const proceed = confirm(
+          `พบว่าคะแนนของ ${judgeLabel(scoreJudge)} สำหรับผลงานนี้ถูกบันทึกไปแล้วจากอุปกรณ์/แท็บอื่นระหว่างที่หน้านี้เปิดค้างไว้\n\n` +
+          `กด "ตกลง" เพื่อบันทึกทับด้วยคะแนนที่เลือกไว้ในหน้านี้\n` +
+          `กด "ยกเลิก" เพื่อโหลดคะแนนล่าสุดแทน (คะแนนที่เพิ่งเลือกไว้ในหน้านี้จะหายไป)`
+        );
+        if(!proceed){
+          btn.disabled = false;
+          btn.textContent = original;
+          toast.style.color = 'var(--muted)';
+          toast.textContent = 'กำลังโหลดคะแนนล่าสุด...';
+          await loadFormState();
+          return;
+        }
+      }
+      btn.textContent = 'กำลังบันทึก...';
+      const newSavedAt = new Date().toISOString();
       await withTimeout(
-        saveScore(scoreWorkId, scoreJudge, { levels: levelsSnapshot, total: computeTotal(levelsSnapshot), savedAt: new Date().toISOString() }),
+        saveScore(scoreWorkId, scoreJudge, { levels: levelsSnapshot, total: computeTotal(levelsSnapshot), savedAt: newSavedAt }),
         15000,
         'การบันทึกใช้เวลานานเกินไป'
       );
       lastSavedScoreLevels = levelsSnapshot;
+      formLoadedSavedAt = newSavedAt;
       if(complete){
         toast.style.color = 'var(--green)';
         toast.textContent = `บันทึกคะแนนของ ${judgeLabel(scoreJudge)} เรียบร้อยแล้ว (รวม ${computeTotal(levelsSnapshot)} คะแนน)`;
