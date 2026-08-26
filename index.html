@@ -676,13 +676,12 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
 <script>
 const firebaseConfig = {
-  apiKey: "AIzaSyBw_-iqQoJ1-XtJMNcrUrOw98K86HE1ldk",
-  authDomain: "oral-presentation-2569-test.firebaseapp.com",
-  projectId: "oral-presentation-2569-test",
-  storageBucket: "oral-presentation-2569-test.firebasestorage.app",
-  messagingSenderId: "415232235035",
-  appId: "1:415232235035:web:eca33737fc420bac0c4abe",
-  measurementId: "G-LHYQXXSDGN"
+  apiKey: "AIzaSyDAeDb-YgSJRzHdIdQcqjQXFNI1OMByEyY",
+  authDomain: "ksp-research-test.firebaseapp.com",
+  projectId: "ksp-research-test",
+  storageBucket: "ksp-research-test.firebasestorage.app",
+  messagingSenderId: "785664317330",
+  appId: "1:785664317330:web:527dac848e71620a08134b"
 };
 firebase.initializeApp(firebaseConfig);
 const fsDb = firebase.firestore();
@@ -809,21 +808,21 @@ function confirmLeaveIfDirty(proceedFn){
 async function logAudit(groupId, action, detail){
   try{
     const who = (authUser && displayNameForEmail(authUser.email)) || (lockedJudge ? judgeLabel(lockedJudge) : (previewJudge ? `${judgeLabel(previewJudge)} (พรีวิว)` : 'ไม่ทราบผู้ใช้'));
-    const r = await storage.get(`auditLog:${groupId}`, true);
+    const r = await storage.get(`national:auditLog:${groupId}`, true);
     let log = r ? JSON.parse(r.value) : [];
     log.push({ action, detail, by: who, at: Date.now() });
     if(log.length > 300) log = log.slice(log.length - 300);
-    await storage.set(`auditLog:${groupId}`, JSON.stringify(log), true);
+    await storage.set(`national:auditLog:${groupId}`, JSON.stringify(log), true);
   }catch(e){ /* audit logging must never block the real action */ }
 }
 async function loadAuditLogFor(groupId){
   try{
-    const r = await storage.get(`auditLog:${groupId}`, true);
+    const r = await storage.get(`national:auditLog:${groupId}`, true);
     return r ? JSON.parse(r.value) : [];
   }catch(e){ return []; }
 }
 async function saveAuditLogFor(groupId, log){
-  await storage.set(`auditLog:${groupId}`, JSON.stringify(log), true);
+  await storage.set(`national:auditLog:${groupId}`, JSON.stringify(log), true);
 }
 let openDetailWorkId = null;
 let homeSection = null;
@@ -961,143 +960,17 @@ function readImageFileToDataURL(file, maxDim){
     reader.readAsDataURL(file);
   });
 }
-/* ---------- signature photo cleanup: helper functions (ported from the
-   tested "ระบบระดับภูมิภาค" implementation) ---------- */
-/* Cheap approximate Gaussian blur via a separable sliding-window box blur
-   (two passes horizontal+vertical, run twice) — used to estimate the LOCAL
-   background tone under uneven lighting/shadow, without any external
-   image-processing library. O(w*h) regardless of radius. */
-function sigBoxBlur1D(src, w, h, radius, horizontal){
-  const out = new Float32Array(w*h);
-  const size = radius*2+1;
-  if(horizontal){
-    for(let y=0; y<h; y++){
-      const rowOff = y*w;
-      let sum = 0;
-      for(let x=-radius; x<=radius; x++){
-        const xi = Math.min(w-1, Math.max(0, x));
-        sum += src[rowOff+xi];
-      }
-      for(let x=0; x<w; x++){
-        out[rowOff+x] = sum/size;
-        const xOut = Math.max(0, x-radius);
-        const xIn = Math.min(w-1, x+radius+1);
-        sum += src[rowOff+xIn] - src[rowOff+xOut];
-      }
-    }
-  } else {
-    for(let x=0; x<w; x++){
-      let sum = 0;
-      for(let y=-radius; y<=radius; y++){
-        const yi = Math.min(h-1, Math.max(0, y));
-        sum += src[yi*w+x];
-      }
-      for(let y=0; y<h; y++){
-        out[y*w+x] = sum/size;
-        const yOut = Math.max(0, y-radius);
-        const yIn = Math.min(h-1, y+radius+1);
-        sum += src[yIn*w+x] - src[yOut*w+x];
-      }
-    }
-  }
-  return out;
-}
-function sigBoxBlur2D(src, w, h, radius, passes){
-  passes = passes || 2;
-  let cur = src;
-  for(let p=0; p<passes; p++){
-    cur = sigBoxBlur1D(cur, w, h, radius, true);
-    cur = sigBoxBlur1D(cur, w, h, radius, false);
-  }
-  return cur;
-}
-/* Percentile of a value array via a 256-bucket brightness histogram — much
-   faster than sorting the full pixel array for a typical signature photo. */
-function sigPercentile(values, pct){
-  const hist = new Array(256).fill(0);
-  for(let i=0; i<values.length; i++){
-    hist[Math.min(255, Math.max(0, Math.round(values[i])))]++;
-  }
-  const target = values.length * pct / 100;
-  let cum = 0;
-  for(let v=0; v<256; v++){
-    cum += hist[v];
-    if(cum >= target) return v;
-  }
-  return 255;
-}
-function sigMedianFilter3x3(src, w, h){
-  const out = new Float32Array(w*h);
-  const buf = new Float32Array(9);
-  for(let y=0; y<h; y++){
-    for(let x=0; x<w; x++){
-      let k = 0;
-      for(let dy=-1; dy<=1; dy++){
-        for(let dx=-1; dx<=1; dx++){
-          const xx = Math.min(w-1, Math.max(0, x+dx));
-          const yy = Math.min(h-1, Math.max(0, y+dy));
-          buf[k++] = src[yy*w+xx];
-        }
-      }
-      out[y*w+x] = Array.from(buf).sort((a,b)=>a-b)[4];
-    }
-  }
-  return out;
-}
-/* Connected-component labeling (8-connectivity) via iterative flood fill —
-   used to tell a real pen/pencil stroke (one solidly-dark connected blob)
-   apart from paper grain (many tiny scattered blobs) or a photo shadow
-   (a large but faint blob). Iterative (stack-based), not recursive. */
-function sigLabelComponents(mask, w, h){
-  const labels = new Int32Array(w*h);
-  let nextLabel = 0;
-  const sizes = [];
-  const stack = new Int32Array(w*h);
-  for(let start=0; start<w*h; start++){
-    if(!mask[start] || labels[start]!==0) continue;
-    nextLabel++;
-    let sp = 0;
-    stack[sp++] = start;
-    labels[start] = nextLabel;
-    let size = 0;
-    while(sp>0){
-      const p = stack[--sp];
-      size++;
-      const x = p % w, y = (p / w) | 0;
-      for(let dy=-1; dy<=1; dy++){
-        for(let dx=-1; dx<=1; dx++){
-          if(dx===0 && dy===0) continue;
-          const nx = x+dx, ny = y+dy;
-          if(nx<0 || nx>=w || ny<0 || ny>=h) continue;
-          const np = ny*w+nx;
-          if(mask[np] && labels[np]===0){
-            labels[np] = nextLabel;
-            stack[sp++] = np;
-          }
-        }
-      }
-    }
-    sizes[nextLabel] = size;
-  }
-  return { labels, sizes, count: nextLabel };
-}
 /* Removes a light/plain background from an uploaded signature photo and crops
-   tightly to the remaining ink. Adapts automatically to the photo ("triage"):
-     - faint pencil ink (narrow brightness gap vs. paper) needs a stronger
-       gamma boost or the stroke barely shows up;
-     - uneven lighting / a soft shadow across the paper, OR very faint ink,
-       both need the local-background-flatten path (divide out a blurred
-       estimate of the local paper tone) — a plain global color-distance
-       threshold still lets a smooth shadow blob survive as visible alpha,
-       and with faint ink the same global stretch amplifies ordinary paper
-       grain into visible noise across the whole photo.
-   After thresholding, small noise specks AND large-but-faint shadow blobs
-   are both dropped via connected-component filtering: a real stroke is a
-   blob that's both reasonably sized AND solidly dark on average — paper
-   grain fails the size test, a soft shadow fails the darkness test.
-   Same external contract as before (dataUrl + padding -> Promise<dataUrl>)
-   so the calling UI needs no changes; falls back to returning the original
-   dataUrl untouched if the image fails to load, exactly as before. */
+   tightly to the remaining ink, so uploaded signatures end up similarly sized
+   (and dark enough to print clearly) as drawn ones. Uses adaptive thresholding
+   (not true AI segmentation): rather than assuming a single flat background
+   color, it estimates a LOCAL background at every pixel by heavily
+   downscaling the image (which erases thin signature strokes but keeps the
+   broad paper color/lighting) and comparing each pixel to that blurred map —
+   this correctly handles shadows, uneven lighting, and off-white paper.
+   Pixels that differ enough from their local background are kept fully
+   opaque and darkened toward black so faint pen strokes still print clearly.
+   May not fully remove strongly textured or multi-colored backgrounds. */
 function removeBackgroundAndCropDataURL(dataUrl, padding){
   padding = padding==null ? 6 : padding;
   return new Promise((resolve)=>{
@@ -1110,116 +983,96 @@ function removeBackgroundAndCropDataURL(dataUrl, padding){
       ctx.drawImage(img, 0, 0, w, h);
       const imgData = ctx.getImageData(0, 0, w, h);
       const data = imgData.data;
-      const n = w*h;
 
-      const lum = new Float32Array(n);
-      for(let p=0, i=0; p<n; p++, i+=4){
-        lum[p] = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
-      }
+      // Local background map: downscale drastically (erases pen strokes,
+      // keeps broad lighting/paper color) then scale back up as a blur.
+      const small = document.createElement('canvas');
+      const sw = Math.max(8, Math.round(w/20)), sh = Math.max(8, Math.round(h/20));
+      small.width = sw; small.height = sh;
+      small.getContext('2d').drawImage(canvas, 0, 0, sw, sh);
+      const bgCanvas = document.createElement('canvas');
+      bgCanvas.width = w; bgCanvas.height = h;
+      const bgCtx = bgCanvas.getContext('2d');
+      bgCtx.imageSmoothingEnabled = true;
+      bgCtx.drawImage(small, 0, 0, w, h);
+      const bgData = bgCtx.getImageData(0, 0, w, h).data;
 
-      const bgLum90 = sigPercentile(lum, 90);
-      const inkLum1 = sigPercentile(lum, 1);
-      const inkBgGap = bgLum90 - inkLum1;
-      const faintInk = inkBgGap < 80;
-      const gamma = faintInk ? 0.5 : 0.65;
-
-      // เช็คแสงไม่สม่ำเสมอ "ทั่วภาพ" ไม่ใช่แค่ขอบ (เงา/แสงเอียงอาจอยู่กลางภาพ)
-      const probeRadius = Math.max(3, Math.round(Math.min(w, h) * 0.12));
-      const bgProbe = sigBoxBlur2D(lum, w, h, probeRadius, 2);
-      // หมึกจางมาก (ช่องว่าง<20) ก็ต้องใช้ local-bg flatten เหมือนกัน แม้แสงจะดูสม่ำเสมอ
-      // เพราะการ stretch contrast แบบ global จะขยาย noise เกรนกระดาษธรรมดาจนเห็นได้ชัด
-      //
-      // (หมายเหตุ: เดิมเคยลองใช้ global threshold เมื่อ unevenLighting=false และ inkBgGap>=20
-      // แต่พบเคสจริงที่พลาด — ภาพถ่ายกระดาษที่มีรอยตัวอักษรพิมพ์ทะลุมาจากด้านหลังเป็นบริเวณ
-      // กว้างแต่จาง (ทำให้ bgSpread ที่วัดจากพิกเซล "สว่างกว่า median" เท่านั้นต่ำเกินจริง เพราะ
-      // บริเวณรอยเปื้อนถูกกรองออกจากการคำนวณไปเองตั้งแต่แรกในฐานะพิกเซลที่มืดกว่า median)
-      // ผลคือ global threshold ดึงรอยเปื้อนนั้นติดมาเป็นเงาปนกับลายเซ็นจริง ในขณะที่ local-bg
-      // flatten แก้ปัญหานี้ได้ตรงจุดกว่ามาก (ปรับพื้นหลังท้องถิ่นให้เรียบก่อน จึงตัดรอยเปื้อนกว้างๆ
-      // ออกไปเองโดยธรรมชาติ โดยไม่กระทบเส้นหมึกจริงที่มีคอนทราสต์เฉพาะจุดสูงกว่าเสมอ) จึงตัดสินใจ
-      // ใช้ local-bg flatten กับทุกภาพเสมอ ไม่ต้องเสี่ยงพึ่ง heuristic แยกกรณีที่อาจพลาดแบบนี้อีก
-      const useLocalBg = true;
-
-      let alpha;
-      if(useLocalBg){
-        const flat = new Float32Array(n);
-        for(let i=0; i<n; i++) flat[i] = Math.min(255, Math.max(0, (lum[i] / Math.max(1, bgProbe[i])) * 255));
-        const bgF = sigPercentile(flat, 92);
-        const inkF = sigPercentile(flat, 0.5);
-        const span = Math.max(bgF - inkF, 1);
-        alpha = new Float32Array(n);
-        for(let i=0; i<n; i++){
-          const norm = Math.min(1, Math.max(0, (bgF - flat[i]) / span));
-          alpha[i] = Math.pow(norm, gamma) * 255;
+      // Distance of each pixel's color from its LOCAL background estimate.
+      // Small distance = background (goes transparent); larger distance =
+      // ink (kept fully opaque and darkened so it prints clearly).
+      const DIST_LIGHT = 22; // at/below this distance -> fully background
+      const DIST_FULL = 40;  // at/above this distance -> fully opaque ink
+      for(let i=0; i<data.length; i+=4){
+        const dr=data[i]-bgData[i], dg=data[i+1]-bgData[i+1], db=data[i+2]-bgData[i+2];
+        const dist = Math.sqrt(dr*dr+dg*dg+db*db);
+        let t; // 0 = background, 1 = full ink
+        if(dist <= DIST_LIGHT) t = 0;
+        else if(dist >= DIST_FULL) t = 1;
+        else t = (dist-DIST_LIGHT)/(DIST_FULL-DIST_LIGHT);
+        // Color is set to solid black and ONLY alpha carries how ink-like a
+        // pixel is (no extra per-pixel color darkening on top of that). This
+        // keeps the stroke's true width/tone gradient faithful to the
+        // original — thin or lightly-inked areas stay visually thin/faint,
+        // solid dark areas stay solid — rather than both effects compounding
+        // and visually fattening every detected stroke.
+        data[i+3] = Math.round(t*255);
+        if(t > 0){
+          data[i] = 0; data[i+1] = 0; data[i+2] = 0;
         }
-      } else {
-        const span = Math.max(bgLum90 - inkLum1, 1);
-        alpha = new Float32Array(n);
-        for(let i=0; i<n; i++){
-          const norm = Math.min(1, Math.max(0, (bgLum90 - lum[i]) / span));
-          alpha[i] = Math.pow(norm, gamma) * 255;
-        }
-      }
-
-      // denoise: median filter + noise floor, แล้ว rescale กลับให้เต็ม 0-255
-      alpha = sigMedianFilter3x3(alpha, w, h);
-      const noiseFloor = 60;
-      let maxA = 0;
-      for(let i=0; i<n; i++){ if(alpha[i] < noiseFloor) alpha[i] = 0; if(alpha[i] > maxA) maxA = alpha[i]; }
-      if(maxA > 0){
-        for(let i=0; i<n; i++) alpha[i] = Math.min(255, Math.max(0, (alpha[i]-noiseFloor)/(255-noiseFloor)*255));
-      }
-
-      // connected-component filtering: ตัดทั้ง noise เม็ดเล็กและเงาก้อนใหญ่ที่จางกว่าหมึกจริง
-      // ขั้นที่ 1: ตัดสินใจ "เก็บ/ทิ้งทั้งก้อน" โดยรวมพิกเซลแบบหลวม (alpha>20) เป็นก้อนเดียวกัน
-      // (ต้องใช้ threshold หลวมตรงนี้ ไม่ใช่เข้ม — ถ้าใช้ threshold เข้มในการรวมก้อนตั้งแต่แรก
-      // จะทำให้ทุกพิกเซลในก้อนที่รอดมาถึงจุดนี้ "เข้มอยู่แล้วโดยนิยาม" ทำให้เกณฑ์ p90 ด้านล่าง
-      // ตรวจจับเงาไม่ได้ผลอีกต่อไป เพราะกลุ่มตัวอย่างที่ทดสอบถูกกรองเอาไว้ล่วงหน้าแล้ว)
-      const mask = new Uint8Array(n);
-      for(let i=0; i<n; i++) mask[i] = alpha[i] > 20 ? 1 : 0;
-      const { labels, count } = sigLabelComponents(mask, w, h);
-      const compSize = new Array(count+1).fill(0);
-      // ฮิสโตแกรม alpha แยกต่อ blob (256 ระดับ) ใช้หา percentile ต่อก้อนแบบเร็ว
-      // โดยไม่ต้อง sort พิกเซลทั้งหมดของแต่ละก้อน
-      const blobHist = Array.from({length: count+1}, () => new Uint32Array(256));
-      for(let i=0; i<n; i++){
-        const lbl = labels[i];
-        if(lbl>0){
-          compSize[lbl]++;
-          blobHist[lbl][Math.min(255, Math.max(0, Math.round(alpha[i])))]++;
-        }
-      }
-      const minSize = Math.max(50, Math.round(0.0014 * n));
-      const minP90Alpha = 140;
-      // เกณฑ์นี้เช็คว่า "ก้อนนี้มีแกนหมึกทึบจริงอยู่บ้างไหม" (p90 ของ alpha ในก้อน)
-      // แทนที่จะเช็คค่าเฉลี่ยทั้งก้อน — ค่าเฉลี่ยใช้ไม่ได้กับลายเซ็นที่เป็นเส้นวนต่อกัน
-      // เป็นก้อนใหญ่ก้อนเดียว (เช่น ปากกาน้ำเงินอ่อน) เพราะส่วนเส้นบางๆ/ปลายเส้นจาง
-      // ในก้อนเดียวกันจะดึงค่าเฉลี่ยทั้งก้อนลงมาต่ำกว่าเกณฑ์ ทั้งที่แกนกลางเส้นเข้มจริง
-      // p90 ตรวจแค่ว่ามีพิกเซลส่วนที่เข้มจริงอยู่บ้าง (ไม่สนใจส่วนบาง/จางที่เหลือ) จึงแยก
-      // หมึกจริงออกจากเงา/noise ได้แม่นยำกว่า (ยืนยันด้วยภาพทดสอบจริงหลายแบบแล้ว)
-      //
-      // (หมายเหตุ: เคยลองเพิ่มขั้นตอน "หาแกนเข้มจริงแล้วขยาย (dilate) กลับ" เพื่อตัดเงาที่ติด
-      // มากับก้อนที่เก็บไว้ออกไปอีกที แต่พบว่ามันตัดปลายเส้นที่จางค่อยๆ ตามธรรมชาติ (เช่นตอน
-      // ปากกายกออกจากกระดาษ) ทิ้งไปด้วย เพราะปลายเส้นแบบนั้นไม่มี "แกนเข้ม" ให้ dilate ไปถึง
-      // — ปัญหาเงาที่แท้จริงแก้ได้ดีกว่าด้วยการบังคับใช้ local-bg flatten ข้างบนแทน จึงตัดขั้น
-      // ตอนนี้ออก กลับไปใช้ "เก็บทั้งก้อน หรือทิ้งทั้งก้อน" แบบง่ายๆ ตามเกณฑ์ p90 พอ)
-      const keep = new Uint8Array(count+1);
-      for(let lbl=1; lbl<=count; lbl++){
-        if(compSize[lbl] < minSize) continue;
-        const hist = blobHist[lbl];
-        const target = compSize[lbl] * 0.9;
-        let cum = 0, p90 = 255;
-        for(let v=0; v<256; v++){ cum += hist[v]; if(cum >= target){ p90 = v; break; } }
-        if(p90 >= minP90Alpha) keep[lbl] = 1;
-      }
-      for(let i=0; i<n; i++){ if(!keep[labels[i]]) alpha[i] = 0; }
-
-      // เขียนกลับเป็นหมึกทึบสีเข้ม (ให้พิมพ์/แสดงผลชัดเจน) alpha ตามที่คำนวณ
-      for(let p=0, i=0; p<n; p++, i+=4){
-        data[i] = 0; data[i+1] = 0; data[i+2] = 0;
-        data[i+3] = Math.round(alpha[p]);
       }
       ctx.putImageData(imgData, 0, 0);
 
+      // Discard small/isolated speckles (JPEG noise, paper dust, ink shadow
+      // blobs near a pen-lift point) that passed the color threshold but
+      // aren't really part of the signature: find connected blobs of opaque
+      // pixels, then keep only ones that are a substantial fraction of the
+      // largest blob's size — genuine separate strokes (an underline, a
+      // dot, a second letter) are normally a meaningful size, while leftover
+      // noise/shadow blobs tend to be small even when they sit right next
+      // to a real stroke, so position alone can't reliably tell them apart.
+      (function denoise(){
+        const total = w*h;
+        const visited = new Uint8Array(total);
+        const blobs = [];
+        for(let sy=0; sy<h; sy++){
+          for(let sx=0; sx<w; sx++){
+            const sp = sy*w+sx;
+            if(visited[sp] || data[sp*4+3] <= 10) continue;
+            const stack = [sp];
+            visited[sp] = 1;
+            let count=0;
+            const pixels = [];
+            while(stack.length){
+              const cur = stack.pop();
+              const cx = cur % w, cy = (cur / w) | 0;
+              count++;
+              pixels.push(cur);
+              for(let dy=-1; dy<=1; dy++){
+                for(let dx=-1; dx<=1; dx++){
+                  if(dx===0 && dy===0) continue;
+                  const nx=cx+dx, ny=cy+dy;
+                  if(nx<0||nx>=w||ny<0||ny>=h) continue;
+                  const np = ny*w+nx;
+                  if(!visited[np] && data[np*4+3] > 10){
+                    visited[np] = 1;
+                    stack.push(np);
+                  }
+                }
+              }
+            }
+            blobs.push({ pixels, count });
+          }
+        }
+        if(blobs.length <= 1) return;
+        blobs.sort((a,b)=> b.count - a.count);
+        const minKeep = Math.max(30, Math.round(blobs[0].count * 0.15));
+        for(let bi=1; bi<blobs.length; bi++){
+          const b = blobs[bi];
+          if(b.count >= minKeep) continue;
+          for(const p of b.pixels){ data[p*4+3] = 0; }
+        }
+      })();
+      ctx.putImageData(imgData, 0, 0);
       let minX=w, minY=h, maxX=-1, maxY=-1;
       for(let y=0; y<h; y++){
         for(let x=0; x<w; x++){
@@ -1283,45 +1136,45 @@ function trimCanvasToDataURL(canvasId, padding){
 /* ---------- storage ---------- */
 async function loadGroups(){
   try{
-    const r = await storage.get('groups', true);
+    const r = await storage.get('national:groups', true);
     groups = r ? JSON.parse(r.value) : [];
   }catch(e){ groups = []; }
 }
 async function saveGroups(){
-  await storage.set('groups', JSON.stringify(groups), true);
+  await storage.set('national:groups', JSON.stringify(groups), true);
 }
 async function loadVisitors(){
   try{
-    const r = await storage.get('visitors', true);
+    const r = await storage.get('national:visitors', true);
     visitors = r ? JSON.parse(r.value) : [];
   }catch(e){ visitors = []; }
 }
 async function saveVisitors(){
-  await storage.set('visitors', JSON.stringify(visitors), true);
+  await storage.set('national:visitors', JSON.stringify(visitors), true);
 }
 function isVisitorUser(){
   return !!(authUser && visitors.some(v=>v.email.toLowerCase() === authUser.email.toLowerCase()));
 }
 async function loadSuperAdmins(){
   try{
-    const r = await storage.get('superadmins', true);
+    const r = await storage.get('national:superadmins', true);
     superAdmins = r ? JSON.parse(r.value) : [];
   }catch(e){ superAdmins = []; }
 }
 async function saveSuperAdmins(){
-  await storage.set('superadmins', JSON.stringify(superAdmins), true);
+  await storage.set('national:superadmins', JSON.stringify(superAdmins), true);
 }
 /* username -> email lookup, used so people can log in with a username instead of
    typing their email. Publicly readable (like groups/visitors) since it only maps
    a login handle to an email — no secrets — and must be readable before sign-in. */
 async function loadUsernameMap(){
   try{
-    const r = await storage.get('usernameMap', true);
+    const r = await storage.get('national:usernameMap', true);
     usernameMap = r ? JSON.parse(r.value) : {};
   }catch(e){ usernameMap = {}; }
 }
 async function saveUsernameMap(){
-  await storage.set('usernameMap', JSON.stringify(usernameMap), true);
+  await storage.set('national:usernameMap', JSON.stringify(usernameMap), true);
 }
 /* Accepts either a username or a raw email (for accounts created before usernames
    existed, or typed directly by someone who prefers it). Returns the real email
@@ -1350,21 +1203,21 @@ function isSuperAdminUser(){
 }
 async function loadEvalYear(){
   try{
-    const r = await storage.get('evalYear', true);
+    const r = await storage.get('national:evalYear', true);
     evalYear = r ? r.value : '';
   }catch(e){ evalYear = ''; }
 }
 async function saveEvalYear(){
-  await storage.set('evalYear', evalYear, true);
+  await storage.set('national:evalYear', evalYear, true);
 }
 async function loadJudgeNamesFor(groupId){
   try{
-    const r = await storage.get(`judgeNames:${groupId}`, true);
+    const r = await storage.get(`national:judgeNames:${groupId}`, true);
     return r ? { 1:'',2:'',3:'', ...JSON.parse(r.value) } : { 1:'',2:'',3:'' };
   }catch(e){ return { 1:'',2:'',3:'' }; }
 }
 async function saveJudgeNamesFor(groupId, names){
-  await storage.set(`judgeNames:${groupId}`, JSON.stringify(names), true);
+  await storage.set(`national:judgeNames:${groupId}`, JSON.stringify(names), true);
 }
 /* PIN gate for judges opening their link directly (no login). Kept separate from
    judgeNames since it's a security control, not just display info. An empty PIN
@@ -1381,12 +1234,12 @@ function generatePin(){
 }
 async function loadJudgePinsFor(groupId){
   try{
-    const r = await storage.get(`judgePins:${groupId}`, true);
+    const r = await storage.get(`national:judgePins:${groupId}`, true);
     return r ? { 1:'',2:'',3:'', ...JSON.parse(r.value) } : { 1:'',2:'',3:'' };
   }catch(e){ return { 1:'',2:'',3:'' }; }
 }
 async function saveJudgePinsFor(groupId, pins){
-  await storage.set(`judgePins:${groupId}`, JSON.stringify(pins), true);
+  await storage.set(`national:judgePins:${groupId}`, JSON.stringify(pins), true);
 }
 function isPinVerified(groupId, judge){
   try{ return sessionStorage.getItem(`pinOK:${groupId}:${judge}`) === '1'; }catch(e){ return false; }
@@ -1396,12 +1249,12 @@ function markPinVerified(groupId, judge){
 }
 async function loadJudgeSignaturesFor(groupId){
   try{
-    const r = await storage.get(`judgeSignatures:${groupId}`, true);
+    const r = await storage.get(`national:judgeSignatures:${groupId}`, true);
     return r ? { 1:null,2:null,3:null, ...JSON.parse(r.value) } : { 1:null,2:null,3:null };
   }catch(e){ return { 1:null,2:null,3:null }; }
 }
 async function saveJudgeSignaturesFor(groupId, sigs){
-  await storage.set(`judgeSignatures:${groupId}`, JSON.stringify(sigs), true);
+  await storage.set(`national:judgeSignatures:${groupId}`, JSON.stringify(sigs), true);
 }
 async function saveJudgeSignatureAtomic(groupId, judge, sigEntry){
   // Signatures for all 3 judges of a group live in ONE shared document, so a
@@ -1424,34 +1277,34 @@ async function saveJudgeSignatureAtomic(groupId, judge, sigEntry){
 }
 async function loadCertifyApprovedFor(groupId){
   try{
-    const r = await storage.get(`certifyApproved:${groupId}`, true);
+    const r = await storage.get(`national:certifyApproved:${groupId}`, true);
     return r ? JSON.parse(r.value) === true : false;
   }catch(e){ return false; }
 }
 async function saveCertifyApprovedFor(groupId, val){
-  await storage.set(`certifyApproved:${groupId}`, JSON.stringify(!!val), true);
+  await storage.set(`national:certifyApproved:${groupId}`, JSON.stringify(!!val), true);
 }
 async function loadWorksFor(groupId){
   try{
-    const r = await storage.get(`works:${groupId}`, true);
+    const r = await storage.get(`national:works:${groupId}`, true);
     return r ? JSON.parse(r.value) : [];
   }catch(e){ return []; }
 }
 async function saveWorksFor(groupId, works){
-  await storage.set(`works:${groupId}`, JSON.stringify(works), true);
+  await storage.set(`national:works:${groupId}`, JSON.stringify(works), true);
 }
 async function loadScore(workId, judge){
   try{
-    const r = await storage.get(`score:${workId}:${judge}`, true);
+    const r = await storage.get(`national:score:${workId}:${judge}`, true);
     return r ? JSON.parse(r.value) : null;
   }catch(e){ return null; }
 }
 async function saveScore(workId, judge, data){
-  await storage.set(`score:${workId}:${judge}`, JSON.stringify(data), true);
+  await storage.set(`national:score:${workId}:${judge}`, JSON.stringify(data), true);
 }
 async function resetScoresForWork(workId){
   for(const j of JUDGES){
-    try{ await storage.delete(`score:${workId}:${j}`, true); }catch(e){ /* ignore if already absent */ }
+    try{ await storage.delete(`national:score:${workId}:${j}`, true); }catch(e){ /* ignore if already absent */ }
   }
 }
 async function loadAllScoresFor(workId){
@@ -1474,12 +1327,12 @@ async function loadAllScoresForWorks(works){
 /* ---------- Google Sheets sync (via Apps Script Web App webhook) ---------- */
 async function loadSheetsUrlFor(groupId){
   try{
-    const r = await storage.get(`sheetsUrl:${groupId}`, true);
+    const r = await storage.get(`national:sheetsUrl:${groupId}`, true);
     return r ? r.value : '';
   }catch(e){ return ''; }
 }
 async function saveSheetsUrlFor(groupId, url){
-  await storage.set(`sheetsUrl:${groupId}`, url, true);
+  await storage.set(`national:sheetsUrl:${groupId}`, url, true);
 }
 async function pushRowsToSheets(groupId, sheetName, headers, dataRows){
   const url = await loadSheetsUrlFor(groupId);
@@ -2783,6 +2636,10 @@ async function renderWorksTab(){
           <input type="text" id="newTitle" placeholder="เช่น RES-001">
         </div>
         <div>
+          <label class="field-label">ชื่อผลงานวิจัย</label>
+          <input type="text" id="newResearchName" placeholder="ชื่อเรื่องงานวิจัย">
+        </div>
+        <div>
           <label class="field-label">ผู้นำเสนอ / ทีม</label>
           <input type="text" id="newPresenter" placeholder="ชื่อผู้นำเสนอ หรือ ทีม">
         </div>
@@ -2930,6 +2787,7 @@ async function renderWorksTab(){
   };
   document.getElementById('addWorkBtn').onclick = async ()=>{
     const title = document.getElementById('newTitle').value.trim();
+    const researchName = document.getElementById('newResearchName').value.trim();
     const presenter = document.getElementById('newPresenter').value.trim();
     const regionalRaw = document.getElementById('newRegional').value.trim();
     const regionalScore = regionalRaw==='' ? null : Math.round(parseFloat(regionalRaw)*100)/100;
@@ -2942,12 +2800,13 @@ async function renderWorksTab(){
       setTimeout(()=>{ btn.textContent = original; btn.style.background = ''; }, 2200);
       return;
     }
-    const newWork = { id: uid(), title, presenter, regionalScore: (regionalScore===null || isNaN(regionalScore)) ? null : regionalScore };
+    const newWork = { id: uid(), title, researchName, presenter, regionalScore: (regionalScore===null || isNaN(regionalScore)) ? null : regionalScore };
     ctxWorks.push(newWork);
     try{
       await saveWorksFor(ctxGroupId, ctxWorks);
-      logAudit(ctxGroupId, 'add_work', `เพิ่มผลงาน "${title}" (ผู้นำเสนอ: ${presenter||'-'})`).catch(()=>{});
+      logAudit(ctxGroupId, 'add_work', `เพิ่มผลงาน "${title}" (ชื่อผลงาน: ${researchName||'-'}, ผู้นำเสนอ: ${presenter||'-'})`).catch(()=>{});
       document.getElementById('newTitle').value = '';
+      document.getElementById('newResearchName').value = '';
       document.getElementById('newPresenter').value = '';
       document.getElementById('newRegional').value = '';
       btn.textContent = 'เพิ่มแล้ว ✓';
@@ -3041,7 +2900,7 @@ async function renderWorksList(){
     wrap.innerHTML = `<div class="empty">ยังไม่มีผลงานวิจัยในกลุ่มนี้ เพิ่มผลงานเรื่องแรกด้านบน</div>`;
     return;
   }
-  wrap.innerHTML = `<div style="overflow-x:auto;"><table style="min-width:680px;"><thead><tr><th>รหัสผลงานวิจัย</th><th>ผู้นำเสนอ</th><th>คะแนนระดับภูมิภาค</th><th>สถานะการให้คะแนน</th><th></th></tr></thead><tbody id="worksTbody"></tbody></table></div>`;
+  wrap.innerHTML = `<div style="overflow-x:auto;"><table style="min-width:820px;"><thead><tr><th>รหัสผลงานวิจัย</th><th>ชื่อผลงานวิจัย</th><th>ผู้นำเสนอ</th><th>คะแนนระดับภูมิภาค</th><th>สถานะการให้คะแนน</th><th></th></tr></thead><tbody id="worksTbody"></tbody></table></div>`;
   const tbody = document.getElementById('worksTbody');
   const scoresByWork = await loadAllScoresForWorks(ctxWorks);
   for(const w of ctxWorks){
@@ -3058,6 +2917,7 @@ async function renderWorksList(){
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td data-title-cell="${w.id}"><strong>${escapeHtml(w.title)}</strong><br><a href="#" data-editwork="${w.id}" style="font-size:12px;color:var(--orange);">✎ แก้ไข</a></td>
+      <td data-researchname-cell="${w.id}">${escapeHtml(w.researchName||'-')}</td>
       <td data-presenter-cell="${w.id}" style="color:var(--muted)">${escapeHtml(w.presenter||'-')}</td>
       <td>
         <div style="display:flex;gap:6px;align-items:center;">
@@ -3075,9 +2935,11 @@ async function renderWorksList(){
     editBtn.onclick = (e)=>{
       e.preventDefault();
       const titleCell = tr.querySelector(`td[data-title-cell="${w.id}"]`);
+      const researchNameCell = tr.querySelector(`td[data-researchname-cell="${w.id}"]`);
       const presenterCell = tr.querySelector(`td[data-presenter-cell="${w.id}"]`);
       const actionsCell = tr.querySelector(`td[data-actions-cell="${w.id}"]`);
       titleCell.innerHTML = `<input type="text" data-edit-title="${w.id}" value="${escapeHtml(w.title)}" style="width:100%;min-width:120px;">`;
+      researchNameCell.innerHTML = `<input type="text" data-edit-researchname="${w.id}" value="${escapeHtml(w.researchName||'')}" style="width:100%;min-width:160px;">`;
       presenterCell.innerHTML = `<input type="text" data-edit-presenter="${w.id}" value="${escapeHtml(w.presenter||'')}" style="width:100%;min-width:120px;">`;
       actionsCell.innerHTML = `
         <button class="btn btn-gold" data-savework="${w.id}" style="margin-right:6px;">บันทึกการแก้ไข</button>
@@ -3090,6 +2952,7 @@ async function renderWorksList(){
       actionsCell.querySelector(`button[data-cancelwork="${w.id}"]`).onclick = ()=> renderWorksList();
       actionsCell.querySelector(`button[data-savework="${w.id}"]`).onclick = async ()=>{
         const newTitle = titleCell.querySelector('input').value.trim();
+        const newResearchName = researchNameCell.querySelector('input').value.trim();
         const newPresenter = presenterCell.querySelector('input').value.trim();
         const toast = document.getElementById(`editWorkToast${w.id}`);
         if(!newTitle){
@@ -3104,15 +2967,17 @@ async function renderWorksList(){
           return;
         }
         const target = ctxWorks.find(x=>x.id===w.id);
-        const prevTitle = target.title, prevPresenter = target.presenter;
+        const prevTitle = target.title, prevResearchName = target.researchName, prevPresenter = target.presenter;
         target.title = newTitle;
+        target.researchName = newResearchName;
         target.presenter = newPresenter;
         try{
           await saveWorksFor(ctxGroupId, ctxWorks);
-          logAudit(ctxGroupId, 'edit_work', `แก้ไขผลงาน "${prevTitle}" → "${newTitle}"${prevPresenter!==newPresenter ? ` (ผู้นำเสนอ: "${prevPresenter||'-'}" → "${newPresenter||'-'}")` : ''}`).catch(()=>{});
+          logAudit(ctxGroupId, 'edit_work', `แก้ไขผลงาน "${prevTitle}" → "${newTitle}"${prevResearchName!==newResearchName ? ` (ชื่อผลงาน: "${prevResearchName||'-'}" → "${newResearchName||'-'}")` : ''}${prevPresenter!==newPresenter ? ` (ผู้นำเสนอ: "${prevPresenter||'-'}" → "${newPresenter||'-'}")` : ''}`).catch(()=>{});
           renderWorksList();
         }catch(err){
           target.title = prevTitle;
+          target.researchName = prevResearchName;
           target.presenter = prevPresenter;
           toast.style.color = 'var(--red)';
           toast.textContent = 'บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง';
@@ -3298,7 +3163,7 @@ function renderScoreTab(){
 }
 
 async function resetScoreForJudge(workId, judge){
-  try{ await storage.delete(`score:${workId}:${judge}`, true); }catch(e){ /* ignore if already absent */ }
+  try{ await storage.delete(`national:score:${workId}:${judge}`, true); }catch(e){ /* ignore if already absent */ }
 }
 function renderJudgeWorksList(){
   const body = document.getElementById('tabBody');
@@ -3500,11 +3365,71 @@ function updateLiveTotal(){
 }
 
 /* ---------- PDF report (print-based) ---------- */
-async function generatePdfReport(){
-  const btn = document.getElementById('pdfReportBtn');
-  const original = btn ? btn.textContent : null;
-  if(btn){ btn.textContent = 'กำลังเตรียมรายงาน...'; btn.disabled = true; }
+function sigBlockHtmlFor(freshSigs, freshCertifyApproved){
+  return `
+      <div class="sig-block">
+        ${JUDGES.map(n=>{
+          const cert = freshCertifyApproved ? freshSigs[n] : null;
+          const signedDateStr = (cert && cert.signature) ? new Date(cert.at).toLocaleDateString('th-TH', { year:'numeric', month:'long', day:'numeric' }) : null;
+          return `
+          <div class="sig-row">
+            <div class="sig-line-row">
+              <span>ลงชื่อ</span>
+              <span class="sig-underline">${signedDateStr ? `<img src="${cert.signature}" class="sig-image">` : ''}</span>
+              <span>ผู้ประเมิน</span>
+            </div>
+            <div class="sig-name">( ${escapeHtml(judgeLabel(n))} )</div>
+            <div class="sig-date">${signedDateStr ? `รับรองผลเมื่อวันที่ ${signedDateStr}` : 'วันที่ ............ / ............ / ............'}</div>
+          </div>`;
+        }).join('')}
+      </div>`;
+}
 
+function reportStyleBlock(orientation){
+  return `
+  @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&display=swap');
+  @page{ size:A4 ${orientation}; margin:0.8cm; }
+  body{ font-family:'TH Sarabun PSK','TH Sarabun New','Sarabun',sans-serif; font-size:15pt; color:#000; margin:0; padding:3px; background:#fff; }
+  .report-page{ page-break-after:always; page-break-inside:avoid; break-inside:avoid-page; }
+  .report-page:last-child{ page-break-after:auto; }
+  .report-page-flow{ page-break-after:auto; }
+  .report-title{ font-family:inherit; font-weight:700; font-size:19pt; margin:0 0 3px; }
+  .report-subtitle{ font-family:inherit; font-weight:700; font-size:16pt; margin:0 0 3px; }
+  .report-meta{ font-size:13pt; color:#333; margin:0 0 5px; }
+  .report-table{ width:100%; border-collapse:collapse; font-size:15pt; margin-bottom:5px; }
+  .report-table th, .report-table td{ border:1px solid #999; padding:4px 6px; text-align:left; line-height:1.15; vertical-align:middle; word-wrap:break-word; overflow-wrap:break-word; }
+  .report-table th{ text-align:center; }
+  .main-summary-table{ table-layout:fixed; }
+  .main-summary-table td{ text-align:center; }
+  .main-summary-table td.col-presenter, .main-summary-table td.col-title{ text-align:left; }
+  .sig-block{ margin-top:8px; display:flex; flex-direction:row; flex-wrap:wrap; justify-content:space-around; gap:6px; }
+  .sig-row{ text-align:center; flex:1 1 30%; min-width:150px; }
+  .sig-line-row{ display:flex; align-items:flex-end; justify-content:center; flex-wrap:wrap; gap:4px; font-size:13pt; margin-bottom:0; }
+  .sig-underline{ display:inline-block; width:110px; height:1.3cm; border-bottom:1px solid #333; position:relative; }
+  .sig-image{ position:absolute; bottom:2px; left:50%; transform:translateX(-50%); height:1.2cm; max-width:100px; object-fit:contain; }
+  .sig-name{ font-size:12.5pt; }
+  .sig-date{ font-size:10.5pt; margin-top:0; color:#333; }
+  .print-hint{ background:#FCE6D3; color:#8A4A14; padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:14px; font-family:'TH Sarabun PSK','TH Sarabun New','Sarabun',sans-serif; }
+  @media print{ .print-hint{ display:none; } }
+  `;
+}
+
+function downloadHtmlFile(filename, htmlContent){
+  const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(blobUrl), 5000);
+}
+
+/* Builds the ranked rows shared by both report parts. nationalTotal here is
+   regionalScore(converted, full 70) + res.total(oral presentation score) —
+   see computeNationalTotal(). */
+async function computeNationalReportRows(){
   const freshSignatures = await loadJudgeSignaturesFor(ctxGroupId);
   const freshCertifyApproved = await loadCertifyApprovedFor(ctxGroupId);
 
@@ -3523,118 +3448,132 @@ async function generatePdfReport(){
     if(b.nationalTotal===null) return -1;
     return b.nationalTotal - a.nationalTotal;
   });
+  return { rows, freshSignatures, freshCertifyApproved };
+}
 
+/* ---- Part 1: landscape ranking table ----
+   ลำดับที่ / รหัสผลงาน / ชื่อผู้วิจัย / ชื่อผลงานวิจัย / คะแนนภูมิภาค (เต็ม 70) /
+   คะแนนการนำเสนอ (คะแนนระดับประเทศ) / รวมคะแนน / ผลการประเมิน */
+async function generatePdfReportPart1(){
+  const btn = document.getElementById('pdfReportBtn1');
+  const original = btn ? btn.textContent : null;
+  if(btn){ btn.textContent = 'กำลังเตรียมรายงาน...'; btn.disabled = true; }
+
+  const { rows, freshSignatures, freshCertifyApproved } = await computeNationalReportRows();
   const dateStr = new Date().toLocaleDateString('th-TH', { year:'numeric', month:'long', day:'numeric' });
 
-  let html = `<div class="report-page">
-    <h1 class="report-title">รายงานผลการประเมินผลงานวิจัยภาคบรรยาย ประจำปี ${evalYear ? escapeHtml(evalYear) : '2569'}</h1>
-    <p class="report-meta">กลุ่ม: ${escapeHtml(ctxGroupName)} &nbsp;·&nbsp; ออกรายงานวันที่ ${dateStr}</p>
+  let html = `<div class="report-page-flow">
+    <h1 class="report-title">รายงานผลการประเมินผลงานวิจัยภาคบรรยาย ระดับประเทศ ประจำปี ${evalYear ? escapeHtml(evalYear) : '2569'}</h1>
+    <p class="report-meta">กลุ่ม: ${escapeHtml(ctxGroupName)} &nbsp;·&nbsp; ส่วนที่ 1: ตารางจัดอันดับคะแนน &nbsp;·&nbsp; ออกรายงานวันที่ ${dateStr}</p>
     <table class="report-table main-summary-table">
       <colgroup>
-        <col style="width:6%;">
-        <col style="width:12%;">
-        <col style="width:35%;">
-        <col style="width:10%;">
-        <col style="width:10%;">
-        <col style="width:14%;">
-        <col style="width:13%;">
+        <col style="width:5%">
+        <col style="width:10%">
+        <col style="width:16%">
+        <col style="width:29%">
+        <col style="width:10%">
+        <col style="width:10%">
+        <col style="width:10%">
+        <col style="width:10%">
       </colgroup>
-      <thead><tr><th>ลำดับ</th><th>รหัส<br>ผลงานวิจัย</th><th>ผู้นำเสนอ</th><th>คะแนนรวม</th><th>คะแนนภูมิภาค</th><th>คะแนนรวม<br>ระดับประเทศ</th><th>ผลการประเมิน</th></tr></thead>
+      <thead><tr><th>ลำดับที่</th><th>รหัสผลงาน</th><th>ชื่อผู้วิจัย</th><th>ชื่อผลงานวิจัย</th><th>คะแนนภูมิภาค</th><th>คะแนนการนำเสนอ</th><th>รวมคะแนน</th><th>ผลการประเมิน</th></tr></thead>
       <tbody>`;
   rows.forEach((r,i)=>{
     html += `<tr>
       <td>${r.nationalTotal!==null ? i+1 : '-'}</td>
       <td>${escapeHtml(r.work.title)}</td>
       <td class="col-presenter">${escapeHtml(r.work.presenter||'-')}</td>
-      <td>${r.result.total!==null ? r.result.total : '-'}</td>
+      <td class="col-title">${escapeHtml(r.work.researchName||'-')}</td>
       <td>${r.work.regionalScore!=null ? r.work.regionalScore.toFixed(2) : '-'}</td>
+      <td>${r.result.total!==null ? r.result.total : '-'}</td>
       <td>${r.nationalTotal!==null ? r.nationalTotal.toFixed(2) : '-'}</td>
       <td>${r.grade || '-'}</td>
     </tr>`;
   });
-  html += `</tbody></table></div>`;
+  html += `</tbody></table>
+    <h2 class="report-subtitle" style="margin-top:10px;">การรับรองผลการตัดสิน</h2>
+    <p class="report-meta">คณะกรรมการผู้ตัดสินได้ร่วมกันพิจารณาและรับรองผลคะแนนของผลงานวิจัยทุกเรื่องในกลุ่มนี้ตามที่ปรากฏในตารางข้างต้น</p>
+    ${sigBlockHtmlFor(freshSignatures, freshCertifyApproved)}
+  </div>`;
 
-  rows.forEach(r=>{
-    const res = r.result;
-    html += `<div class="report-page">
-      <h2 class="report-subtitle">รายละเอียดคะแนน: ${escapeHtml(r.work.title)}</h2>
-      <p class="report-meta">ผู้นำเสนอ: ${escapeHtml(r.work.presenter||'-')}</p>`;
-    {
-      html += `<table class="report-table">
-        <thead><tr><th>ตัวบ่งชี้</th><th>น้ำหนัก</th><th>กรรมการ 1</th><th>กรรมการ 2</th><th>กรรมการ 3</th><th>ฐานนิยม</th><th>คะแนน</th></tr></thead><tbody>`;
-      res.indicators.forEach(ind=>{
-        html += `<tr>
-          <td>${ind.id} ${escapeHtml(ind.name)}</td>
-          <td style="text-align:center">${ind.weight}</td>
-          <td style="text-align:center">${ind.judgeLevels[0]!=null ? ind.judgeLevels[0] : '-'}</td>
-          <td style="text-align:center">${ind.judgeLevels[1]!=null ? ind.judgeLevels[1] : '-'}</td>
-          <td style="text-align:center">${ind.judgeLevels[2]!=null ? ind.judgeLevels[2] : '-'}</td>
-          <td style="text-align:center">${ind.mode!==null ? ind.mode : 'รอ'}</td>
-          <td style="text-align:center">${ind.score!==null ? ind.score : 'รอ'}</td>
-        </tr>`;
-      });
-      const totalCell = res.total!==null ? res.total : 'รอ';
-      html += `</tbody></table>
-      <table class="report-table">
-        <tbody>
-          <tr><td>คะแนนรวม (มติกรรมการ)</td><td style="text-align:center">${totalCell}</td></tr>
-          <tr><td>คะแนนระดับภูมิภาค</td><td style="text-align:center">${r.work.regionalScore!=null?r.work.regionalScore.toFixed(2):'-'}</td></tr>
-          <tr><td><strong>สรุปผลคะแนนระดับประเทศ</strong></td><td style="text-align:center"><strong>${r.nationalTotal!==null?r.nationalTotal.toFixed(2):'-'}</strong></td></tr>
-          <tr><td><strong>สรุปผลการประเมินระดับประเทศ</strong></td><td style="text-align:center"><strong>${r.grade || '-'}</strong></td></tr>
-        </tbody>
-      </table>`;
-    }
-    html += `
-      <h2 class="report-subtitle" style="margin-top:10px;">การรับรองผลการตัดสิน</h2>
-      <p class="report-meta">คณะกรรมการผู้ตัดสินได้ร่วมกันพิจารณาและรับรองผลคะแนนของผลงาน "${escapeHtml(r.work.title)}${r.work.presenter ? ' ผู้วิจัย ' + escapeHtml(r.work.presenter) : ''}" ตามที่ปรากฏในรายงานฉบับนี้</p>
-      <div class="sig-block">
-        ${JUDGES.map(n=>{
-          const cert = freshCertifyApproved ? freshSignatures[n] : null;
-          const signedDateStr = (cert && cert.signature) ? new Date(cert.at).toLocaleDateString('th-TH', { year:'numeric', month:'long', day:'numeric' }) : null;
-          return `
-          <div class="sig-row">
-            <div class="sig-line-row">
-              <span>ลงชื่อ</span>
-              <span class="sig-underline">${signedDateStr ? `<img src="${cert.signature}" class="sig-image">` : ''}</span>
-              <span>ผู้ประเมิน</span>
-            </div>
-            <div class="sig-name">( ${escapeHtml(judgeLabel(n))} )</div>
-            <div class="sig-date">${signedDateStr ? `รับรองผลเมื่อวันที่ ${signedDateStr}` : 'วันที่ ............ / ............ / ............'}</div>
-          </div>`;
-        }).join('')}
-      </div>
-    </div>`;
-  });
   const standaloneHtml = `<!DOCTYPE html>
 <html lang="th">
 <head>
 <meta charset="UTF-8">
-<title>รายงานผลการประเมิน - ${escapeHtml(ctxGroupName)}</title>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&display=swap');
-  @page{ size:A4; margin:1cm; }
-  body{ font-family:'TH Sarabun PSK','TH Sarabun New','Sarabun',sans-serif; font-size:16pt; color:#000; margin:0; padding:3px; background:#fff; }
-  .report-page{ page-break-after:always; page-break-inside:avoid; break-inside:avoid-page; }
-  .report-page:last-child{ page-break-after:auto; }
-  .report-title{ font-family:inherit; font-weight:700; font-size:20pt; margin:0 0 3px; }
-  .report-subtitle{ font-family:inherit; font-weight:700; font-size:17pt; margin:0 0 3px; }
-  .report-meta{ font-size:14pt; color:#333; margin:0 0 5px; }
-  .report-table{ width:100%; border-collapse:collapse; font-size:16pt; margin-bottom:5px; }
-  .report-table th, .report-table td{ border:1px solid #999; padding:0px 5px; text-align:left; line-height:1.05; }
-  .report-table th{ text-align:center; }
-  .main-summary-table{ table-layout:fixed; }
-  .main-summary-table td{ text-align:center; word-wrap:break-word; }
-  .main-summary-table td.col-presenter{ text-align:left; }
-  .sig-block{ margin-top:4px; display:flex; flex-direction:column; gap:2px; }
-  .sig-row{ text-align:center; }
-  .sig-line-row{ display:flex; align-items:flex-end; justify-content:center; gap:6px; font-size:16pt; margin-bottom:0; }
-  .sig-underline{ display:inline-block; width:210px; height:1.5cm; border-bottom:1px solid #333; position:relative; }
-  .sig-image{ position:absolute; bottom:2px; left:50%; transform:translateX(-50%); height:1.35cm; max-width:146px; object-fit:contain; }
-  .sig-name{ font-size:15pt; }
-  .sig-date{ font-size:13pt; margin-top:0; color:#333; }
-  .print-hint{ background:#FCE6D3; color:#8A4A14; padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:14px; font-family:'TH Sarabun PSK','TH Sarabun New','Sarabun',sans-serif; }
-  @media print{ .print-hint{ display:none; } }
-</style>
+<title>รายงานผล ส่วนที่ 1 ตารางจัดอันดับ - ${escapeHtml(ctxGroupName)}</title>
+<style>${reportStyleBlock('landscape')}</style>
+</head>
+<body>
+  <div class="print-hint">กด Ctrl+P (หรือ Cmd+P บน Mac) แล้วเลือกปลายทางเป็น "บันทึกเป็น PDF" เพื่อบันทึกรายงานนี้เป็นไฟล์ PDF (หน้ากระดาษเป็นแนวนอนอัตโนมัติ)</div>
+  ${html}
+</body>
+</html>`;
+
+  const filename = `รายงานผล-ส่วนที่1-ตารางจัดอันดับ-${ctxGroupName}.html`.replace(/[\\/:*?"<>|]/g, '');
+  downloadHtmlFile(filename, standaloneHtml);
+
+  if(btn){ btn.textContent = original; btn.disabled = false; }
+}
+
+/* ---- Part 2: portrait per-work detail ---- */
+async function generatePdfReportPart2(){
+  const btn = document.getElementById('pdfReportBtn2');
+  const original = btn ? btn.textContent : null;
+  if(btn){ btn.textContent = 'กำลังเตรียมรายงาน...'; btn.disabled = true; }
+
+  const { rows, freshSignatures, freshCertifyApproved } = await computeNationalReportRows();
+
+  let html = '';
+  rows.forEach(r=>{
+    const res = r.result;
+    html += `<div class="report-page">
+      <h2 class="report-subtitle">รายละเอียดคะแนน: ${escapeHtml(r.work.title)}${r.work.researchName ? ' — ' + escapeHtml(r.work.researchName) : ''}</h2>
+      <p class="report-meta">ผู้นำเสนอ: <strong style="color:#000;">${escapeHtml(r.work.presenter||'-')}</strong></p>
+      <table class="report-table">
+        <colgroup>
+          <col style="width:40%">
+          <col style="width:8%">
+          <col style="width:11%">
+          <col style="width:11%">
+          <col style="width:11%">
+          <col style="width:9%">
+          <col style="width:10%">
+        </colgroup>
+        <thead><tr><th>ตัวบ่งชี้</th><th>น้ำหนัก</th><th>กรรมการ 1</th><th>กรรมการ 2</th><th>กรรมการ 3</th><th>ฐานนิยม</th><th>คะแนน</th></tr></thead><tbody>`;
+    res.indicators.forEach(ind=>{
+      html += `<tr>
+        <td>${ind.id} ${escapeHtml(ind.name)}</td>
+        <td style="text-align:center">${ind.weight}</td>
+        <td style="text-align:center">${ind.judgeLevels[0]!=null ? ind.judgeLevels[0] : '-'}</td>
+        <td style="text-align:center">${ind.judgeLevels[1]!=null ? ind.judgeLevels[1] : '-'}</td>
+        <td style="text-align:center">${ind.judgeLevels[2]!=null ? ind.judgeLevels[2] : '-'}</td>
+        <td style="text-align:center">${ind.mode!==null ? ind.mode : 'รอ'}</td>
+        <td style="text-align:center">${ind.score!==null ? ind.score : 'รอ'}</td>
+      </tr>`;
+    });
+    const totalCell = res.total!==null ? res.total : 'รอ';
+    html += `</tbody></table>
+      <table class="report-table">
+        <tbody>
+          <tr><td>คะแนนการนำเสนอ (มติกรรมการ)</td><td style="text-align:right">${totalCell}</td></tr>
+          <tr><td>คะแนนภูมิภาค (เต็ม 70)</td><td style="text-align:right">${r.work.regionalScore!=null?r.work.regionalScore.toFixed(2):'-'}</td></tr>
+          <tr><td><strong>รวมคะแนน</strong></td><td style="text-align:right"><strong>${r.nationalTotal!==null?r.nationalTotal.toFixed(2):'-'}</strong></td></tr>
+          <tr><td><strong>ผลการประเมิน</strong></td><td style="text-align:right"><strong>${r.grade || '-'}</strong></td></tr>
+        </tbody>
+      </table>`;
+    html += `
+      <h2 class="report-subtitle" style="margin-top:10px;">การรับรองผลการตัดสิน</h2>
+      <p class="report-meta">คณะกรรมการผู้ตัดสินได้ร่วมกันพิจารณาและรับรองผลคะแนนของผลงาน "${escapeHtml(r.work.title)}${r.work.presenter ? ' ผู้นำเสนอ ' + escapeHtml(r.work.presenter) : ''}" ตามที่ปรากฏในรายงานฉบับนี้</p>
+      ${sigBlockHtmlFor(freshSignatures, freshCertifyApproved)}
+    </div>`;
+  });
+
+  const standaloneHtml = `<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>รายงานผล ส่วนที่ 2 รายละเอียดคะแนน - ${escapeHtml(ctxGroupName)}</title>
+<style>${reportStyleBlock('portrait')}</style>
 </head>
 <body>
   <div class="print-hint">กด Ctrl+P (หรือ Cmd+P บน Mac) แล้วเลือกปลายทางเป็น "บันทึกเป็น PDF" เพื่อบันทึกรายงานนี้เป็นไฟล์ PDF</div>
@@ -3642,19 +3581,12 @@ async function generatePdfReport(){
 </body>
 </html>`;
 
-  const filename = `รายงานผล-${ctxGroupName}.html`.replace(/[\\/:*?"<>|]/g, '');
-  const blob = new Blob([standaloneHtml], { type: 'text/html;charset=utf-8' });
-  const blobUrl = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = blobUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(()=>URL.revokeObjectURL(blobUrl), 5000);
+  const filename = `รายงานผล-ส่วนที่2-รายละเอียดคะแนน-${ctxGroupName}.html`.replace(/[\\/:*?"<>|]/g, '');
+  downloadHtmlFile(filename, standaloneHtml);
 
   if(btn){ btn.textContent = original; btn.disabled = false; }
 }
+
 
 /* ---------- summary tab ---------- */
 async function renderSummaryTab(){
@@ -3709,7 +3641,8 @@ async function renderSummaryTab(){
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
       <h2>สรุปผลคะแนน (คะแนนเต็ม ${MAX_SCORE})</h2>
       <div style="text-align:right;flex-shrink:0;">
-        <button class="btn btn-gold" id="pdfReportBtn">ดาวน์โหลดรายงานผล (PDF)</button>
+        <button class="btn btn-gold" id="pdfReportBtn1">ดาวน์โหลดผลสรุป</button>
+        <button class="btn btn-gold" id="pdfReportBtn2">ดาวน์โหลดรายละเอียดคะแนน</button>
       </div>
     </div>
     <div style="overflow-x:auto;">
@@ -3772,8 +3705,10 @@ async function renderSummaryTab(){
   html += `</tbody></table></div></div>` + signCard;
   body.innerHTML = html;
 
-  const pdfBtn = document.getElementById('pdfReportBtn');
-  if(pdfBtn) pdfBtn.onclick = generatePdfReport;
+  const pdfBtn1 = document.getElementById('pdfReportBtn1');
+  if(pdfBtn1) pdfBtn1.onclick = generatePdfReportPart1;
+  const pdfBtn2 = document.getElementById('pdfReportBtn2');
+  if(pdfBtn2) pdfBtn2.onclick = generatePdfReportPart2;
 
   body.querySelectorAll('button[data-detail]').forEach(btn=>{
     btn.onclick = ()=>{
