@@ -2844,10 +2844,16 @@ function renderJudgeNamesCard(){
     </div>
   `).join('');
   JUDGES.forEach(n=>{
-    wrap.querySelector(`button[data-save="${n}"]`).onclick = async ()=>{
+    wrap.querySelector(`button[data-save="${n}"]`).onclick = async (e)=>{
+      const btn = e.currentTarget;
+      const original = btn.textContent;
+      btn.disabled = true;
       ctxJudgeNames[n] = document.getElementById(`judgeName${n}`).value.trim();
       await saveJudgeNamesFor(ctxGroupId, ctxJudgeNames);
       renderWorksList();
+      btn.textContent = 'บันทึกแล้ว ✓';
+      btn.disabled = false;
+      setTimeout(()=>{ btn.textContent = original; }, 1400);
     };
     wrap.querySelector(`button[data-preview="${n}"]`).onclick = ()=>{
       enterPreview(n);
