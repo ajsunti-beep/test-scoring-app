@@ -1852,10 +1852,11 @@ async function renderVisitorGroupsScreen(){
   `;
   const wrap = document.getElementById('visitorGroupsListWrap');
   wrap.innerHTML = groups.map(g=>`<div class="group-card" id="vgrow-${g.id}"></div>`).join('');
-  for(const g of groups){
-    const w = await loadWorksFor(g.id);
+  const worksByGroup = await Promise.all(groups.map(g => loadWorksFor(g.id)));
+  groups.forEach((g, idx) => {
+    const w = worksByGroup[idx];
     const row = document.getElementById(`vgrow-${g.id}`);
-    if(!row) continue;
+    if(!row) return;
     row.innerHTML = `
       <div class="gc-info">
         <strong>${escapeHtml(g.name)}</strong>
@@ -1870,7 +1871,7 @@ async function renderVisitorGroupsScreen(){
       visitorSelectedGroupId = g.id;
       renderApp();
     };
-  }
+  });
 }
 
 async function renderHomeAdminsTab(){
@@ -2472,12 +2473,14 @@ async function renderGroupsList(){
     return;
   }
   wrap.innerHTML = groups.map(g=>`<div class="group-card" id="grow-${g.id}"></div>`).join('');
-  for(const g of groups){
-    const jn = await loadJudgeNamesFor(g.id);
-    const w = await loadWorksFor(g.id);
+  const results = await Promise.all(groups.map(async g => {
+    const [jn, w] = await Promise.all([loadJudgeNamesFor(g.id), loadWorksFor(g.id)]);
+    return { g, jn, w };
+  }));
+  results.forEach(({g, jn, w})=>{
     const namedCount = JUDGES.filter(n=>jn[n] && jn[n].trim()).length;
     renderGroupRow(g, w.length, namedCount);
-  }
+  });
 }
 
 function renderGroupRow(g, workCount, namedCount){
@@ -3525,7 +3528,7 @@ async function generatePdfReportPart1(){
       <td class="col-presenter">${escapeHtml(r.work.presenter||'-')}</td>
       <td class="col-title">${escapeHtml(r.work.researchName||'-')}</td>
       <td>${r.work.regionalScore!=null ? r.work.regionalScore.toFixed(2) : '-'}</td>
-      <td>${r.result.total!==null ? r.result.total : '-'}</td>
+      <td>${r.result.total!==null ? r.result.total.toFixed(2) : '-'}</td>
       <td>${r.nationalTotal!==null ? r.nationalTotal.toFixed(2) : '-'}</td>
       <td>${r.grade || '-'}</td>
     </tr>`;
@@ -3588,10 +3591,10 @@ async function generatePdfReportPart2(){
         <td style="text-align:center">${ind.judgeLevels[1]!=null ? ind.judgeLevels[1] : '-'}</td>
         <td style="text-align:center">${ind.judgeLevels[2]!=null ? ind.judgeLevels[2] : '-'}</td>
         <td style="text-align:center">${ind.mode!==null ? ind.mode : 'รอ'}</td>
-        <td style="text-align:center">${ind.score!==null ? ind.score : 'รอ'}</td>
+        <td style="text-align:center">${ind.score!==null ? ind.score.toFixed(2) : 'รอ'}</td>
       </tr>`;
     });
-    const totalCell = res.total!==null ? res.total : 'รอ';
+    const totalCell = res.total!==null ? res.total.toFixed(2) : 'รอ';
     html += `</tbody></table>
       <table class="report-table">
         <tbody>
@@ -3731,7 +3734,7 @@ async function renderSummaryTab(){
       <td>${r.nationalTotal!==null ? `<span class="rank-badge">${i+1}</span>` : ''}</td>
       <td><strong>${escapeHtml(r.work.title)}</strong><br><span style="color:var(--muted);font-size:12px;">${escapeHtml(r.work.presenter||'')}</span></td>
       <td>${statusCell}</td>
-      <td>${res.total!==null ? `<span class="avg-total">${res.total}</span>` : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${res.total!==null ? `<span class="avg-total">${res.total.toFixed(2)}</span>` : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${regionalCell}</td>
       <td>${nationalCell}</td>
       <td>${gradeCell}</td>
@@ -3955,14 +3958,23 @@ async function renderSummaryTab(){
       const res = r.result;
       const dash = '<span style="color:var(--muted)">-</span>';
       let dhtml = `<table class="score-detail-table" style="font-size:12px;"><thead><tr><th>ตัวบ่งชี้</th><th>${escapeHtml(judgeLabel(1))}</th><th>${escapeHtml(judgeLabel(2))}</th><th>${escapeHtml(judgeLabel(3))}</th><th>ฐานนิยม</th><th>คะแนน</th></tr></thead><tbody>`;
-      res.indicators.forEach(ind=>{
-        dhtml += `<tr style="${ind.conflict?'background:var(--red-bg)':''}">
-          <td>${ind.conflict ? '<span class="warn-icon" title="ยังไม่มีฐานนิยม">!</span>' : ''}${ind.id} ${escapeHtml(ind.name)}</td>
-          <td style="text-align:center">${ind.judgeLevels[0]!=null ? ind.judgeLevels[0] : dash}</td>
-          <td style="text-align:center">${ind.judgeLevels[1]!=null ? ind.judgeLevels[1] : dash}</td>
-          <td style="text-align:center">${ind.judgeLevels[2]!=null ? ind.judgeLevels[2] : dash}</td>
-          <td style="text-align:center">${ind.mode!==null ? ind.mode : (ind.conflict ? '<span style="color:var(--red);font-weight:600">ไม่มี</span>' : '<span style="color:var(--muted)">รอ</span>')}</td>
-          <td style="text-align:center">${ind.score!==null ? ind.score : (ind.conflict ? '<span style="color:var(--red)">ต้องหารือ</span>' : '<span style="color:var(--muted)">รอ</span>')}</td>
+      RUBRIC.forEach(dim=>{
+        const dimIndicators = res.indicators.filter(ind=>ind.dimName===dim.name);
+        dimIndicators.forEach(ind=>{
+          dhtml += `<tr style="${ind.conflict?'background:var(--red-bg)':''}">
+            <td>${ind.conflict ? '<span class="warn-icon" title="ยังไม่มีฐานนิยม">!</span>' : ''}${ind.id} ${escapeHtml(ind.name)}</td>
+            <td style="text-align:center">${ind.judgeLevels[0]!=null ? ind.judgeLevels[0] : dash}</td>
+            <td style="text-align:center">${ind.judgeLevels[1]!=null ? ind.judgeLevels[1] : dash}</td>
+            <td style="text-align:center">${ind.judgeLevels[2]!=null ? ind.judgeLevels[2] : dash}</td>
+            <td style="text-align:center">${ind.mode!==null ? ind.mode : (ind.conflict ? '<span style="color:var(--red);font-weight:600">ไม่มี</span>' : '<span style="color:var(--muted)">รอ</span>')}</td>
+            <td style="text-align:center">${ind.score!==null ? ind.score.toFixed(2) : (ind.conflict ? '<span style="color:var(--red)">ต้องหารือ</span>' : '<span style="color:var(--muted)">รอ</span>')}</td>
+          </tr>`;
+        });
+        const dimConflict = dimIndicators.some(ind=>ind.score===null);
+        const dimTotal = dimConflict ? null : dimIndicators.reduce((s,ind)=>s+ind.score,0);
+        dhtml += `<tr style="background:var(--card-alt,#F7F7F9);">
+          <td colspan="5" style="text-align:right;"><strong>รวม${escapeHtml(dim.name)}</strong></td>
+          <td style="text-align:center"><strong>${dimConflict ? '<span style="color:var(--muted)">รอ</span>' : dimTotal.toFixed(2)}</strong></td>
         </tr>`;
       });
       dhtml += `</tbody></table>`;
@@ -3971,7 +3983,7 @@ async function renderSummaryTab(){
       } else if(res.resolved && !res.allDone){
         dhtml += `<div style="margin-top:8px;color:var(--green);font-size:12px;">สรุปผลได้แล้วจากกรรมการ ${res.doneCount}/3 คน (มีฐานนิยมตรงกันทุกตัวบ่งชี้)</div>`;
       }
-      dhtml += `<div class="detail-row" style="margin-top:8px;"><span>คะแนนรวม</span><span>${res.total!==null ? res.total+' / '+MAX_SCORE : (res.conflicts.length>0 ? 'รอกรรมการปรับคะแนนตัวบ่งชี้ที่ไม่มีฐานนิยม' : `รอกรรมการ (${res.doneCount}/3)`)}</span></div>`;
+      dhtml += `<div class="detail-row" style="margin-top:8px;"><span>คะแนนรวม</span><span>${res.total!==null ? res.total.toFixed(2)+' / '+MAX_SCORE.toFixed(2) : (res.conflicts.length>0 ? 'รอกรรมการปรับคะแนนตัวบ่งชี้ที่ไม่มีฐานนิยม' : `รอกรรมการ (${res.doneCount}/3)`)}</span></div>`;
       panel.innerHTML = dhtml;
     }
   }
