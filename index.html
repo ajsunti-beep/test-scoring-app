@@ -676,12 +676,12 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
 <script>
 const firebaseConfig = {
-  apiKey: "AIzaSyDAeDb-YgSJRzHdIdQcqjQXFNI1OMByEyY",
-  authDomain: "ksp-research-test.firebaseapp.com",
-  projectId: "ksp-research-test",
-  storageBucket: "ksp-research-test.firebasestorage.app",
-  messagingSenderId: "785664317330",
-  appId: "1:785664317330:web:527dac848e71620a08134b"
+  apiKey: "AIzaSyCRp_H0C3HI8XR6ZsTVEscAYeNY5Cbw8wQ",
+  authDomain: "ksp-research-prod.firebaseapp.com",
+  projectId: "ksp-research-prod",
+  storageBucket: "ksp-research-prod.firebasestorage.app",
+  messagingSenderId: "833631976426",
+  appId: "1:833631976426:web:afba9ac4b285a7c7b01093"
 };
 firebase.initializeApp(firebaseConfig);
 const fsDb = firebase.firestore();
@@ -1702,11 +1702,11 @@ function renderIdentityBadge(){
   } else if(previewJudge){
     badge.innerHTML = `<span>กำลังดูตัวอย่าง · ${escapeHtml(judgeLabel(previewJudge))}</span> <a href="#" id="exitPreviewLink">กลับสู่หน้าผู้ดูแลระบบ</a>`;
   } else if(authUser && isVisitorUser()){
-    badge.innerHTML = `<a href="https://ajsunti-beep.github.io/khurusapha-research-test/landing.html" id="backToLandingLink">← หน้าหลัก</a> <span>ผู้เยี่ยมชม: ${escapeHtml(displayNameForEmail(authUser.email))}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
+    badge.innerHTML = `<a href="https://ksp-research-regional.netlify.app/landing.html" id="backToLandingLink">← หน้าหลัก</a> <span>ผู้เยี่ยมชม: ${escapeHtml(displayNameForEmail(authUser.email))}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
   } else if(adminSelectedGroupId && authUser){
-    badge.innerHTML = `<a href="https://ajsunti-beep.github.io/khurusapha-research-test/landing.html" id="backToLandingLink">← หน้าหลัก</a> <span>${escapeHtml(displayNameForEmail(authUser.email))} · กลุ่ม ${escapeHtml(ctxGroupName)}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
+    badge.innerHTML = `<a href="https://ksp-research-regional.netlify.app/landing.html" id="backToLandingLink">← หน้าหลัก</a> <span>${escapeHtml(displayNameForEmail(authUser.email))} · กลุ่ม ${escapeHtml(ctxGroupName)}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
   } else if(authUser){
-    badge.innerHTML = `<a href="https://ajsunti-beep.github.io/khurusapha-research-test/landing.html" id="backToLandingLink">← หน้าหลัก</a> <span>ผู้ดูแลระบบ: ${escapeHtml(displayNameForEmail(authUser.email))}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
+    badge.innerHTML = `<a href="https://ksp-research-regional.netlify.app/landing.html" id="backToLandingLink">← หน้าหลัก</a> <span>ผู้ดูแลระบบ: ${escapeHtml(displayNameForEmail(authUser.email))}</span> <a href="#" id="logoutLink">ออกจากระบบ</a>`;
   } else {
     badge.innerHTML = '';
   }
@@ -2772,6 +2772,7 @@ function renderGroupRowEdit(g, workCount, namedCount){
       <button class="btn btn-primary" data-savename="${g.id}">บันทึก</button>
       <button class="btn btn-outline" data-cancel="${g.id}">ยกเลิก</button>
     </div>
+    <div class="toast" id="editGroupToast-${g.id}"></div>
   `;
   const input = document.getElementById(`editGroupName-${g.id}`);
   const yearInput = document.getElementById(`editGroupYear-${g.id}`);
@@ -2780,7 +2781,15 @@ function renderGroupRowEdit(g, workCount, namedCount){
   row.querySelector(`button[data-savename="${g.id}"]`).onclick = async ()=>{
     const newName = input.value.trim();
     const newYear = yearInput.value.trim();
+    const toast = document.getElementById(`editGroupToast-${g.id}`);
     if(!newName){ input.focus(); return; }
+    // เช็คชื่อซ้ำภายในปีเดียวกัน (ไม่นับตัวเอง) — กันกรณี backfill ปีให้กลุ่มเก่าจนไปชนกับ
+    // กลุ่มอื่นที่ชื่อเดียวกันในปีเดียวกันโดยไม่ตั้งใจ (เช่นเดียวกับตอนสร้างกลุ่มใหม่)
+    if(groups.some(x=>x.id!==g.id && x.name.trim().toLowerCase()===newName.toLowerCase() && (x.year||'')===(newYear||''))){
+      toast.style.color = 'var(--red)';
+      toast.textContent = 'มีชื่อกลุ่มนี้อยู่แล้วในปีนี้ กรุณาใช้ชื่ออื่น หรือตรวจสอบปีที่ระบุ';
+      return;
+    }
     const found = groups.find(x=>x.id===g.id);
     if(found){ found.name = newName; found.year = newYear; }
     await saveGroups();
