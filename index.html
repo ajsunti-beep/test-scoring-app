@@ -1816,11 +1816,16 @@ async function renderGroupsListScreen(){
           <div class="icon-circle">${ICON_PEOPLE}</div>
           <h3>การจัดการกรรมการ/ผลงานวิจัย</h3>
         </div>
+        <div class="icon-tile" id="goExportExcel">
+          <div class="icon-circle">${ICON_CHART}</div>
+          <h3>ส่งออก Excel ภาพรวมทั้งระบบ</h3>
+        </div>
       </div>
     `;
     const sysTile = document.getElementById('goHomeSystem');
     if(sysTile) sysTile.onclick = ()=>{ homeSection = 'system'; renderGroupsListScreen(); };
     document.getElementById('goHomeGroups').onclick = ()=>{ homeSection = 'groups'; renderGroupsListScreen(); };
+    document.getElementById('goExportExcel').onclick = exportAllGroupsExcel;
     return;
   }
   /* กันไว้อีกชั้น เผื่อ homeSection ค้างเป็น 'system' อยู่จากก่อนถูกถอดสิทธิ์ */
@@ -3474,6 +3479,100 @@ function downloadHtmlFile(filename, htmlContent){
 /* Builds the ranked rows shared by both report parts. nationalTotal here is
    regionalScore(converted, full 70) + res.total(oral presentation score) —
    see computeNationalTotal(). */
+let xlsxLoadPromise = null;
+function ensureXlsxLoaded(){
+  if(window.XLSX) return Promise.resolve();
+  if(xlsxLoadPromise) return xlsxLoadPromise;
+  xlsxLoadPromise = new Promise((resolve, reject)=>{
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => { xlsxLoadPromise = null; reject(new Error('โหลดตัวเขียนไฟล์ Excel ไม่สำเร็จ')); };
+    document.head.appendChild(s);
+  });
+  return xlsxLoadPromise;
+}
+
+async function computeAllGroupsReportData(){
+  // จงใจให้ "กลุ่ม" เรียงคิว (ไม่ Promise.all ข้ามกลุ่ม) แต่ "ผลงานภายในกลุ่ม" ขนานกัน —
+  // รูปแบบเดียวกับฟีเจอร์ backup ข้อมูล เพื่อไม่ให้ยิง request พร้อมกันเป็นพันครั้งรวดเดียว
+  const allGroupRows = [];
+  for(const g of groups){
+    const works = await loadWorksFor(g.id);
+    const scoresByWork = await loadAllScoresForWorks(works);
+    const rows = works.map(w=>{
+      const scores = scoresByWork[w.id];
+      const result = computeWorkResult(scores);
+      const nationalTotal = computeNationalTotal(w, result);
+      const grade = nationalGrade(nationalTotal);
+      return { work: w, result, nationalTotal, grade };
+    });
+    rows.sort((a,b)=>{
+      if(a.nationalTotal===null && b.nationalTotal===null) return 0;
+      if(a.nationalTotal===null) return 1;
+      if(b.nationalTotal===null) return -1;
+      return b.nationalTotal - a.nationalTotal;
+    });
+    allGroupRows.push({ group: g, rows });
+  }
+  return allGroupRows;
+}
+
+async function exportAllGroupsExcel(){
+  const tile = document.getElementById('goExportExcel');
+  const titleEl = tile ? tile.querySelector('h3') : null;
+  const originalTitle = titleEl ? titleEl.textContent : null;
+  if(tile){ tile.style.pointerEvents = 'none'; tile.style.opacity = '0.6'; }
+  if(titleEl) titleEl.textContent = 'กำลังรวบรวมข้อมูล...';
+  try{
+    await ensureXlsxLoaded();
+    const allGroupRows = await computeAllGroupsReportData();
+
+    const summaryAoa = [['กลุ่ม','ลำดับที่','รหัสผลงาน','ชื่อผู้วิจัย','ชื่อผลงานวิจัย','คะแนนภูมิภาค','คะแนนการนำเสนอ','รวมคะแนน','ผลการประเมิน']];
+    const detailAoa = [['กลุ่ม','รหัสผลงาน','ชื่อผลงานวิจัย','ตัวบ่งชี้','น้ำหนัก','กรรมการ 1','กรรมการ 2','กรรมการ 3','ฐานนิยม','คะแนน']];
+
+    allGroupRows.forEach(({ group, rows })=>{
+      rows.forEach((r, i)=>{
+        summaryAoa.push([
+          group.name,
+          r.nationalTotal!==null ? i+1 : '',
+          r.work.title,
+          r.work.presenter || '',
+          r.work.researchName || '',
+          r.work.regionalScore!=null ? r.work.regionalScore : '',
+          r.result.total!==null ? r.result.total : '',
+          r.nationalTotal!==null ? r.nationalTotal : '',
+          r.grade || ''
+        ]);
+        r.result.indicators.forEach(ind=>{
+          detailAoa.push([
+            group.name,
+            r.work.title,
+            r.work.researchName || '',
+            `${ind.id} ${ind.name}`,
+            ind.weight,
+            ind.judgeLevels[0]!=null ? ind.judgeLevels[0] : '',
+            ind.judgeLevels[1]!=null ? ind.judgeLevels[1] : '',
+            ind.judgeLevels[2]!=null ? ind.judgeLevels[2] : '',
+            ind.mode!=null ? ind.mode : '',
+            ind.score!=null ? ind.score : ''
+          ]);
+        });
+      });
+    });
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryAoa), 'สรุปคะแนน');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(detailAoa), 'รายละเอียดคะแนน');
+    const yearPart = evalYear ? `-${evalYear}` : '';
+    XLSX.writeFile(wb, `สรุปผลประเมินประเทศทุกกลุ่ม${yearPart}.xlsx`.replace(/[\\\/:*?"<>|]/g,''));
+  }catch(err){
+    alert('ส่งออกไฟล์ Excel ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง');
+  }
+  if(tile){ tile.style.pointerEvents = ''; tile.style.opacity = ''; }
+  if(titleEl && originalTitle) titleEl.textContent = originalTitle;
+}
+
 async function computeNationalReportRows(){
   const freshSignatures = await loadJudgeSignaturesFor(ctxGroupId);
   const freshCertifyApproved = await loadCertifyApprovedFor(ctxGroupId);
