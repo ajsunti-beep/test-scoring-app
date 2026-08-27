@@ -1294,6 +1294,144 @@ async function loadWorksFor(groupId){
 async function saveWorksFor(groupId, works){
   await storage.set(`national:works:${groupId}`, JSON.stringify(works), true);
 }
+
+/* ================== ดึงผลงานจากภูมิภาค (อ่านข้ามระบบ, read-only) ==================
+   ระบบภูมิภาคและประเทศใช้ Firestore project เดียวกัน (kvstore เดียวกัน แยกด้วย prefix
+   regional:/national:) และ Security Rule เปิด read:true ทุกจุด จึงอ่านข้อมูลดิบของ
+   ภูมิภาคจากฝั่ง client ได้ตรงๆ โดยไม่ต้องผ่าน backend กลาง
+   สำเนา RUBRIC + สูตรคำนวณคะแนนภูมิภาคด้านล่างนี้ "ต้องปรับตามภูมิภาคด้วยเสมอ" ถ้าวันหลัง
+   ภูมิภาคแก้ไข RUBIC/สูตรคำนวณ ต้องแก้ไฟล์นี้ตามเพื่อไม่ให้คะแนนคำนวณผิด */
+const REGIONAL_RUBRIC = [
+  { name:'ปัญหาและวัตถุประสงค์การวิจัย', weight:2, indicators:[
+    { id:'1.1', name:'ชื่อเรื่อง', weight:0.5 },
+    { id:'1.2', name:'หลักการและความเป็นมา', weight:0.5 },
+    { id:'1.3', name:'แนวคิด หลักการ ทฤษฎี กรอบแนวคิดการวิจัย', weight:0.5 },
+    { id:'1.4', name:'วัตถุประสงค์การวิจัย', weight:0.5 }
+  ]},
+  { name:'ระเบียบวิธีวิจัย', weight:3, indicators:[
+    { id:'2.1', name:'แบบแผนการวิจัย', weight:1/3 },
+    { id:'2.2', name:'ประชากรและกลุ่มเป้าหมาย', weight:1/3 },
+    { id:'2.3', name:'ตัวแปร', weight:1/3 },
+    { id:'2.4', name:'เครื่องมือวิจัย', weight:1/3 },
+    { id:'2.5', name:'การเก็บรวบรวมข้อมูล', weight:1/3 },
+    { id:'2.6', name:'การวิเคราะห์ข้อมูล', weight:1/3 },
+    { id:'2.7', name:'การสรุปผลการวิจัย', weight:1/3 },
+    { id:'2.8', name:'อภิปรายผล', weight:1/3 },
+    { id:'2.9', name:'ข้อเสนอแนะ', weight:1/3 }
+  ]},
+  { name:'คุณค่าและประโยชน์ของงานวิจัย', weight:3, indicators:[
+    { id:'3.1', name:'คุณค่าของงานวิจัย', weight:1 },
+    { id:'3.2', name:'การนำไปใช้ประโยชน์ในทางปฏิบัติ', weight:1 },
+    { id:'3.3', name:'การนำไปใช้ประโยชน์ในทางวิชาการ/วิชาชีพ', weight:1 }
+  ]},
+  { name:'คุณภาพของรายงานวิจัย', weight:2, indicators:[
+    { id:'4.1', name:'ความถูกต้องของการเขียนรายงานวิจัย', weight:1 },
+    { id:'4.2', name:'องค์ประกอบของรายงานวิจัยครบถ้วน', weight:1 }
+  ]}
+];
+const REGIONAL_PULL_MIN_SCORE = 40; // เกณฑ์คะแนนดิบ (เต็ม 50) ที่อนุญาตให้ดึงได้
+const REGIONAL_TO_NATIONAL_FACTOR = 70/50;
+
+function regionalModeOf(vals){
+  const count = {};
+  vals.forEach(v=>count[v]=(count[v]||0)+1);
+  let best = null, bestCount = 1;
+  for(const v in count){
+    if(count[v] > bestCount){ bestCount = count[v]; best = Number(v); }
+  }
+  return best;
+}
+async function loadRegionalGroupsList(){
+  try{ const r = await storage.get('regional:groups', true); return r ? JSON.parse(r.value) : []; }
+  catch(e){ return []; }
+}
+async function loadRegionalWorksFor(groupId){
+  try{ const r = await storage.get(`regional:works:${groupId}`, true); return r ? JSON.parse(r.value) : []; }
+  catch(e){ return []; }
+}
+async function loadRegionalJudgeSignaturesFor(groupId){
+  const result = { 1:null, 2:null, 3:null };
+  const perJudge = await Promise.all(JUDGES.map(async j=>{
+    try{ const r = await storage.get(`regional:judgeSignatures:${groupId}:${j}`, true); return r ? JSON.parse(r.value) : null; }
+    catch(e){ return null; }
+  }));
+  JUDGES.forEach((j,idx)=>{ result[j] = perJudge[idx]; });
+  return result;
+}
+async function loadRegionalConsentNationalFor(groupId){
+  try{ const r = await storage.get(`regional:consentNational:${groupId}`, true); return r ? JSON.parse(r.value)===true : false; }
+  catch(e){ return false; }
+}
+async function loadRegionalScoreRaw(workId, judge){
+  try{ const r = await storage.get(`regional:score:${workId}:${judge}`, true); return r ? JSON.parse(r.value) : null; }
+  catch(e){ return null; }
+}
+async function computeRegionalRawTotal(workId){
+  const pairs = await Promise.all(JUDGES.map(async j => [j, await loadRegionalScoreRaw(workId, j)]));
+  const scores = {};
+  pairs.forEach(([j, v]) => { scores[j] = v; });
+  const indicatorScores = [];
+  REGIONAL_RUBRIC.forEach(dim=>{
+    dim.indicators.forEach(ind=>{
+      const judgeLevels = JUDGES.map(j=> (scores[j] && scores[j].levels && scores[j].levels[ind.id]) ? scores[j].levels[ind.id] : null);
+      const nonNull = judgeLevels.filter(v=>v!=null);
+      const mode = nonNull.length>=2 ? regionalModeOf(nonNull) : null;
+      indicatorScores.push(mode!==null ? mode*ind.weight : null);
+    });
+  });
+  const resolved = indicatorScores.every(s=>s!==null);
+  return resolved ? Math.round(indicatorScores.reduce((s,v)=>s+v,0)*100)/100 : null;
+}
+
+/* ---------- ทะเบียนกลางเชื่อมโยงภูมิภาค↔ประเทศ (single source of truth) ---------- */
+async function loadRegionalPullIndex(){
+  try{ const r = await storage.get('link:regionalPullIndex', true); return r ? JSON.parse(r.value) : {}; }
+  catch(e){ return {}; }
+}
+async function saveRegionalPullIndex(idx){
+  await storage.set('link:regionalPullIndex', JSON.stringify(idx), true);
+}
+/* ล้าง entry ที่ "ค้าง" ออกอัตโนมัติ — เผื่อกรณีเน็ตหลุดกลางคันตอนดึง/เอาออก ทำให้ทะเบียน
+   กับข้อมูลจริงไม่ตรงกัน (ดู "จุดอ่อน" ที่คุยกันไว้ก่อนเริ่มเขียนโค้ด) */
+async function cleanStaleRegionalPullEntries(idx){
+  const groupIds = [...new Set(Object.values(idx).map(e=>e.nationalGroupId))];
+  const worksByGroup = {};
+  await Promise.all(groupIds.map(async gid=>{ worksByGroup[gid] = await loadWorksFor(gid); }));
+  let changed = false;
+  for(const [regionalWorkId, entry] of Object.entries(idx)){
+    const works = worksByGroup[entry.nationalGroupId] || [];
+    const stillExists = works.some(w=>w.pulledFromRegionalWorkId===regionalWorkId);
+    if(!stillExists){ delete idx[regionalWorkId]; changed = true; }
+  }
+  if(changed) await saveRegionalPullIndex(idx);
+  return idx;
+}
+
+/* กลุ่มภูมิภาคที่ผ่านเงื่อนไข "เปิดให้ดึง" ระดับกลุ่ม (รับรองผล ≥2/3 + ยินยอมส่งแล้ว) */
+async function loadEligibleRegionalGroups(){
+  const rGroups = await loadRegionalGroupsList();
+  const results = await Promise.all(rGroups.map(async g=>{
+    const [sigs, consent] = await Promise.all([
+      loadRegionalJudgeSignaturesFor(g.id),
+      loadRegionalConsentNationalFor(g.id)
+    ]);
+    const signedCount = JUDGES.filter(n=>sigs[n]).length;
+    return { id: g.id, name: g.name, signedCount, consent };
+  }));
+  return results.filter(g=>g.signedCount>=2 && g.consent);
+}
+/* ผลงานที่มีสิทธิ์ดึงได้ในกลุ่มภูมิภาคหนึ่งกลุ่ม (คะแนนดิบ ≥ 40) พร้อมสถานะว่าถูกดึงไปแล้วหรือยัง */
+async function loadPullableWorksForRegionalGroup(regionalGroupId, pullIndex){
+  const works = await loadRegionalWorksFor(regionalGroupId);
+  const withScores = await Promise.all(works.map(async w=>{
+    const rawTotal = await computeRegionalRawTotal(w.id);
+    return { work: w, rawTotal };
+  }));
+  return withScores
+    .filter(x=>x.rawTotal!==null && x.rawTotal>=REGIONAL_PULL_MIN_SCORE)
+    .map(x=>({ ...x, pulledEntry: pullIndex[x.work.id] || null }));
+}
+
 async function loadScore(workId, judge){
   try{
     const r = await storage.get(`national:score:${workId}:${judge}`, true);
@@ -1505,9 +1643,29 @@ async function enterGroup(groupId, groupName){
     loadCertifyApprovedFor(groupId),
     loadWorksFor(groupId)
   ]);
+  await refreshPulledWorksLiveScores(groupId, ctxWorks);
   scoreWorkId = null;
   scoreLevels = {};
   openDetailWorkId = null;
+}
+/* คะแนนภูมิภาคของผลงานที่ "ดึง" มา ต้องอ่านสดเสมอ (ตกลงกันไว้ตอนออกแบบ — ห้าม snapshot
+   เป็นค่าที่ใช้คำนวณจริง) จุดนี้รีเฟรช work.regionalScore ให้เป็นค่าล่าสุดทุกครั้งที่เข้ากลุ่ม
+   พร้อมตั้งค่าเตือนถ้าคะแนนดิบตกต่ำกว่าเกณฑ์ 40 หลังจากถูกดึงไปแล้ว (ป้ายเตือน ไม่บล็อก) */
+async function refreshPulledWorksLiveScores(groupId, works){
+  const pulled = works.filter(w=>w.pulledFromRegionalWorkId);
+  if(pulled.length===0) return;
+  let changed = false;
+  await Promise.all(pulled.map(async w=>{
+    const rawTotal = await computeRegionalRawTotal(w.pulledFromRegionalWorkId);
+    const converted = rawTotal!==null ? Math.round(rawTotal*REGIONAL_TO_NATIONAL_FACTOR*100)/100 : null;
+    const warning = rawTotal!==null && rawTotal < REGIONAL_PULL_MIN_SCORE;
+    if(w.regionalScore!==converted || !!w.regionalScoreWarning!==warning){
+      w.regionalScore = converted;
+      w.regionalScoreWarning = warning;
+      changed = true;
+    }
+  }));
+  if(changed) await saveWorksFor(groupId, works);
 }
 function enterPreview(n){
   previewJudge = n;
@@ -2669,10 +2827,12 @@ async function renderWorksTab(){
           <input type="number" step="0.01" id="newRegional" placeholder="เช่น 65.50">
         </div>
       </div>
-      <div style="margin-top:14px;">
+      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-primary" id="addWorkBtn">เพิ่มผลงาน</button>
+        <button class="btn btn-outline" id="pullFromRegionalBtn">ดึงผลงานจากภูมิภาค</button>
       </div>
     </div>
+    <div class="card" id="pullFromRegionalWrap" style="display:none;"></div>
     <div class="card">
       <h2>รายการผลงานในกลุ่มนี้ (<span id="worksCount">${ctxWorks.length}</span>)</h2>
       <div id="worksListWrap"></div>
@@ -2842,7 +3002,127 @@ async function renderWorksTab(){
     }
     setTimeout(()=>{ btn.textContent = original; btn.style.background = ''; }, 1800);
   };
+  document.getElementById('pullFromRegionalBtn').onclick = ()=>{
+    const wrap = document.getElementById('pullFromRegionalWrap');
+    const opening = wrap.style.display === 'none';
+    wrap.style.display = opening ? 'block' : 'none';
+    if(opening) renderPullFromRegionalPanel();
+  };
   await renderWorksList();
+}
+
+async function renderPullFromRegionalPanel(){
+  const wrap = document.getElementById('pullFromRegionalWrap');
+  wrap.innerHTML = `<h2>ดึงผลงานจากภูมิภาค</h2><p style="font-size:12.5px;color:var(--muted);">กำลังโหลดกลุ่มที่ยินยอมส่งเข้าสู่การพิจารณาระดับประเทศ...</p>`;
+  const [eligibleGroups, pullIndexRaw] = await Promise.all([
+    loadEligibleRegionalGroups(),
+    loadRegionalPullIndex()
+  ]);
+  const pullIndex = await cleanStaleRegionalPullEntries(pullIndexRaw);
+
+  if(eligibleGroups.length===0){
+    wrap.innerHTML = `<h2>ดึงผลงานจากภูมิภาค</h2><p style="font-size:13px;color:var(--muted);">ยังไม่มีกลุ่มภูมิภาคที่รับรองผลครบ ≥2/3 และยินยอมส่งเข้าสู่การพิจารณาระดับประเทศ</p>`;
+    return;
+  }
+
+  wrap.innerHTML = `
+    <h2>ดึงผลงานจากภูมิภาค</h2>
+    <label class="field-label">เลือกกลุ่มภูมิภาคต้นทาง</label>
+    <select id="pullRegionalGroupSelect">
+      <option value="">— เลือกกลุ่ม —</option>
+      ${eligibleGroups.map(g=>`<option value="${g.id}">${escapeHtml(g.name)} (รับรองแล้ว ${g.signedCount}/3)</option>`).join('')}
+    </select>
+    <div id="pullWorksListWrap" style="margin-top:14px;"></div>
+  `;
+  document.getElementById('pullRegionalGroupSelect').onchange = async (e)=>{
+    const gid = e.target.value;
+    const listWrap = document.getElementById('pullWorksListWrap');
+    if(!gid){ listWrap.innerHTML = ''; return; }
+    listWrap.innerHTML = `<p style="font-size:13px;color:var(--muted);">กำลังโหลดผลงาน...</p>`;
+    const pullable = await loadPullableWorksForRegionalGroup(gid, pullIndex);
+    if(pullable.length===0){
+      listWrap.innerHTML = `<p style="font-size:13px;color:var(--muted);">ไม่มีผลงานที่มีคะแนน ≥ ${REGIONAL_PULL_MIN_SCORE} ในกลุ่มนี้</p>`;
+      return;
+    }
+    listWrap.innerHTML = pullable.map(x=>{
+      const already = x.pulledEntry;
+      return `
+        <div class="admin-row" style="${already ? 'opacity:0.55;' : ''}">
+          <div>
+            <div><strong>${escapeHtml(x.work.title)}</strong> — ${escapeHtml(x.work.researchName||'-')}</div>
+            <div style="font-size:12px;color:var(--muted);">${escapeHtml(x.work.presenter||'-')} · คะแนนดิบ ${x.rawTotal.toFixed(2)}/50</div>
+          </div>
+          ${already
+            ? `<span class="badge badge-pending">ถูกดึงไปแล้ว (กลุ่ม ${escapeHtml(already.nationalGroupName)})</span>`
+            : `<button class="btn btn-gold" data-pull="${x.work.id}" data-group="${gid}">ดึงเข้ากลุ่มนี้</button>`}
+        </div>`;
+    }).join('');
+    listWrap.querySelectorAll('button[data-pull]').forEach(btn=>{
+      btn.onclick = ()=> pullRegionalWork(btn.dataset.pull, btn.dataset.group, btn);
+    });
+  };
+}
+
+async function pullRegionalWork(regionalWorkId, regionalGroupId, btn){
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'กำลังดึง...';
+  try{
+    // เช็คซ้ำก่อนเขียนจริง กันแอดมิน 2 คนแย่งดึงผลงานเดียวกันพร้อมกัน (concurrency check)
+    const freshIndex = await loadRegionalPullIndex();
+    if(freshIndex[regionalWorkId]){
+      alert('ผลงานนี้ถูกดึงไปแล้วโดยผู้อื่น กรุณารีเฟรชรายการ');
+      renderPullFromRegionalPanel();
+      return;
+    }
+    const rGroups = await loadRegionalGroupsList();
+    const rGroup = rGroups.find(g=>g.id===regionalGroupId);
+    const rWorks = await loadRegionalWorksFor(regionalGroupId);
+    const rWork = rWorks.find(w=>w.id===regionalWorkId);
+    if(!rWork){ alert('ไม่พบผลงานนี้ในระบบภูมิภาคแล้ว (อาจถูกลบไป)'); renderPullFromRegionalPanel(); return; }
+    const rawTotal = await computeRegionalRawTotal(regionalWorkId);
+    if(rawTotal===null || rawTotal < REGIONAL_PULL_MIN_SCORE){
+      alert('คะแนนของผลงานนี้เปลี่ยนแปลงจนไม่เข้าเกณฑ์แล้ว กรุณารีเฟรชรายการ');
+      renderPullFromRegionalPanel();
+      return;
+    }
+    const converted = Math.round(rawTotal*REGIONAL_TO_NATIONAL_FACTOR*100)/100;
+    const newWork = {
+      id: uid(),
+      title: rWork.title,
+      researchName: rWork.researchName || '',
+      presenter: rWork.presenter || '',
+      regionalScore: converted,
+      regionalScoreWarning: false,
+      pulledFromRegionalWorkId: regionalWorkId
+    };
+    ctxWorks.push(newWork);
+    await saveWorksFor(ctxGroupId, ctxWorks);
+
+    freshIndex[regionalWorkId] = {
+      regionalGroupId,
+      regionalGroupName: rGroup ? rGroup.name : '',
+      workTitle: rWork.title,
+      presenter: rWork.presenter || '',
+      nationalGroupId: ctxGroupId,
+      nationalGroupName: ctxGroupName,
+      pulledAt: Date.now(),
+      pulledBy: (authUser && authUser.email) || null,
+      regionalScoreAtPull: rawTotal
+    };
+    await saveRegionalPullIndex(freshIndex);
+    logAudit(ctxGroupId, 'pull_regional', `ดึงผลงาน "${rWork.title}" จากกลุ่มภูมิภาค "${rGroup ? rGroup.name : regionalGroupId}"`).catch(()=>{});
+
+    const countEl = document.getElementById('worksCount');
+    if(countEl) countEl.textContent = ctxWorks.length;
+    await renderWorksList();
+    renderPullFromRegionalPanel();
+  }catch(err){
+    ctxWorks = ctxWorks.filter(w=>w.pulledFromRegionalWorkId!==regionalWorkId);
+    alert('ดึงผลงานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง');
+    btn.disabled = false;
+    btn.textContent = original;
+  }
 }
 
 function renderJudgeNamesCard(){
@@ -2947,9 +3227,13 @@ async function renderWorksList(){
       <td data-researchname-cell="${w.id}">${escapeHtml(w.researchName||'-')}</td>
       <td data-presenter-cell="${w.id}" style="color:var(--muted)">${escapeHtml(w.presenter||'-')}</td>
       <td>
-        <div style="display:flex;gap:6px;align-items:center;">
-          <input type="number" step="0.01" style="width:90px;padding:6px 8px;font-size:13px;" data-regional-input="${w.id}" value="${w.regionalScore!=null ? w.regionalScore : ''}">
-          <button class="btn btn-outline" style="padding:6px 10px;font-size:12px;flex-shrink:0;" data-regional-save="${w.id}">บันทึก</button>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <input type="number" step="0.01" style="width:90px;padding:6px 8px;font-size:13px;" data-regional-input="${w.id}" value="${w.regionalScore!=null ? w.regionalScore : ''}" ${w.pulledFromRegionalWorkId ? 'readonly title="ซิงก์จากภูมิภาคอัตโนมัติ ห้ามแก้ไขเอง"' : ''}>
+          ${w.pulledFromRegionalWorkId
+            ? (w.regionalScoreWarning
+                ? `<span class="badge badge-conflict" title="คะแนนภูมิภาคปัจจุบันต่ำกว่าเกณฑ์ 40 คะแนนแล้ว"><span class="warn-icon" style="margin-right:4px;">!</span>ต่ำกว่าเกณฑ์แล้ว</span>`
+                : `<span style="font-size:11px;color:var(--muted);">(ซิงก์จากภูมิภาค)</span>`)
+            : `<button class="btn btn-outline" style="padding:6px 10px;font-size:12px;flex-shrink:0;" data-regional-save="${w.id}">บันทึก</button>`}
         </div>
       </td>
       <td>${statusHtml}</td>
@@ -3013,7 +3297,7 @@ async function renderWorksList(){
     };
     const regInput = tr.querySelector(`input[data-regional-input="${w.id}"]`);
     const regBtn = tr.querySelector(`button[data-regional-save="${w.id}"]`);
-    regBtn.onclick = async ()=>{
+    if(regBtn) regBtn.onclick = async ()=>{
       const raw = regInput.value.trim();
       const val = raw==='' ? null : Math.round(parseFloat(raw)*100)/100;
       const original = regBtn.textContent;
@@ -3082,6 +3366,16 @@ async function renderWorksList(){
       ctxWorks = ctxWorks.filter(x=>x.id!==w.id);
       await saveWorksFor(ctxGroupId, ctxWorks);
       logAudit(ctxGroupId, 'delete_work', `ลบผลงาน "${w.title}" (ผู้นำเสนอ: ${w.presenter||'-'})`).catch(()=>{});
+      if(w.pulledFromRegionalWorkId){
+        // ปลดล็อกให้ดึงผลงานนี้ซ้ำได้ใหม่ ตามที่ตกลงกันไว้ตอนออกแบบ
+        try{
+          const idx = await loadRegionalPullIndex();
+          if(idx[w.pulledFromRegionalWorkId]){
+            delete idx[w.pulledFromRegionalWorkId];
+            await saveRegionalPullIndex(idx);
+          }
+        }catch(e){ /* ไม่ต้องบล็อกการลบผลงานถ้าปลดล็อกทะเบียนไม่สำเร็จ — self-healing check รอบถัดไปจะเคลียร์ให้เอง */ }
+      }
       renderWorksTab();
     };
     tbody.appendChild(tr);
