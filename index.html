@@ -1416,7 +1416,7 @@ async function loadEligibleRegionalGroups(){
       loadRegionalConsentNationalFor(g.id)
     ]);
     const signedCount = JUDGES.filter(n=>sigs[n]).length;
-    return { id: g.id, name: g.name, signedCount, consent };
+    return { id: g.id, name: g.name, year: g.year || '', signedCount, consent };
   }));
   return results.filter(g=>g.signedCount>=2 && g.consent);
 }
@@ -1979,11 +1979,17 @@ async function renderGroupsListScreen(){
           <h3>ส่งออก Excel ภาพรวมทั้งระบบ</h3>
         </div>
       </div>
+      <div class="card" id="exportExcelPanel" style="display:none;"></div>
     `;
     const sysTile = document.getElementById('goHomeSystem');
     if(sysTile) sysTile.onclick = ()=>{ homeSection = 'system'; renderGroupsListScreen(); };
     document.getElementById('goHomeGroups').onclick = ()=>{ homeSection = 'groups'; renderGroupsListScreen(); };
-    document.getElementById('goExportExcel').onclick = exportAllGroupsExcel;
+    document.getElementById('goExportExcel').onclick = ()=>{
+      const panel = document.getElementById('exportExcelPanel');
+      const opening = panel.style.display === 'none';
+      panel.style.display = opening ? 'block' : 'none';
+      if(opening) renderExportExcelPanel();
+    };
     return;
   }
   /* กันไว้อีกชั้น เผื่อ homeSection ค้างเป็น 'system' อยู่จากก่อนถูกถอดสิทธิ์ */
@@ -2012,19 +2018,45 @@ async function renderVisitorGroupsScreen(){
   body.innerHTML = `
     <div class="card">
       <h2>ภาพรวมผลคะแนนทุกกลุ่ม</h2>
+      <label class="field-label">กรองตามปี</label>
+      <select id="visitorGroupsYearFilter" style="max-width:220px;margin-bottom:12px;"></select>
       <div id="visitorGroupsListWrap"></div>
     </div>
   `;
+  const yearFilterEl = document.getElementById('visitorGroupsYearFilter');
+  const years = [...new Set(groups.map(g=>g.year).filter(y=>y))].sort((a,b)=>b.localeCompare(a));
+  const hasUnset = groups.some(g=>!g.year);
+  yearFilterEl.innerHTML = `
+    <option value="__all__">ทั้งหมด</option>
+    ${years.map(y=>`<option value="${escapeHtml(y)}">ปี ${escapeHtml(y)}</option>`).join('')}
+    ${hasUnset ? `<option value="__unset__">ไม่ระบุปี</option>` : ''}
+  `;
+  yearFilterEl.onchange = renderVisitorGroupsFilteredList;
+  await renderVisitorGroupsFilteredList();
+}
+async function renderVisitorGroupsFilteredList(){
+  const yearFilterEl = document.getElementById('visitorGroupsYearFilter');
+  const selectedYear = yearFilterEl ? yearFilterEl.value : '__all__';
+  const filteredGroups = groups.filter(g=>{
+    if(selectedYear==='__all__') return true;
+    if(selectedYear==='__unset__') return !g.year;
+    return g.year === selectedYear;
+  });
   const wrap = document.getElementById('visitorGroupsListWrap');
-  wrap.innerHTML = groups.map(g=>`<div class="group-card" id="vgrow-${g.id}"></div>`).join('');
-  const worksByGroup = await Promise.all(groups.map(g => loadWorksFor(g.id)));
-  groups.forEach((g, idx) => {
+  if(filteredGroups.length===0){
+    wrap.innerHTML = `<div class="empty">ไม่มีกลุ่มที่ตรงกับตัวกรองปีนี้</div>`;
+    return;
+  }
+  wrap.innerHTML = filteredGroups.map(g=>`<div class="group-card" id="vgrow-${g.id}"></div>`).join('');
+  const worksByGroup = await Promise.all(filteredGroups.map(g => loadWorksFor(g.id)));
+  filteredGroups.forEach((g, idx) => {
     const w = worksByGroup[idx];
     const row = document.getElementById(`vgrow-${g.id}`);
     if(!row) return;
+    const yearLabel = g.year ? `ปี ${escapeHtml(g.year)}` : 'ไม่ระบุปี';
     row.innerHTML = `
       <div class="gc-info">
-        <strong>${escapeHtml(g.name)}</strong>
+        <strong>${escapeHtml(g.name)}</strong> <span class="badge ${g.year ? 'badge-done' : 'badge-pending'}" style="font-size:11px;">${yearLabel}</span>
         <div class="gc-meta">ผลงาน ${w.length} เรื่อง</div>
       </div>
       <div class="gc-actions">
@@ -2426,6 +2458,10 @@ async function renderHomeSystemTab(){
     </div>
     <div class="card">
       <h2>รายการกลุ่ม (${groups.length})</h2>
+      <label class="field-label">กรองตามปี</label>
+      <select id="groupsYearFilter" style="max-width:220px;margin-bottom:12px;">
+        <option value="__all__">ทั้งหมด</option>
+      </select>
       <div id="groupsListWrap"></div>
     </div>
     ${canManageBackup ? `
@@ -2467,7 +2503,7 @@ async function renderHomeSystemTab(){
       setTimeout(()=>{ btn.textContent = original; btn.style.background = ''; }, 2200);
       return;
     }
-    const newGroup = { id: uid(), name };
+    const newGroup = { id: uid(), name, year: evalYear || '' };
     groups.push(newGroup);
     await saveGroups();
     logAudit('_global', 'add_group', `เพิ่มกลุ่ม "${name}"`).catch(()=>{});
@@ -2502,7 +2538,7 @@ async function renderHomeSystemTab(){
           worksWithScores.push({ ...w, scores });
         }
         backup.groups.push({
-          id: g.id, name: g.name,
+          id: g.id, name: g.name, year: g.year || '',
           judgeNames: names, judgePins: pins,
           certifyApproved, judgeSignatures: signatures,
           works: worksWithScores, auditLog
@@ -2590,10 +2626,10 @@ async function renderHomeSystemTab(){
         try{
           for(const g of backup.groups){
             if(!existingIds.has(g.id)){
-              groups.push({ id: g.id, name: g.name });
+              groups.push({ id: g.id, name: g.name, year: g.year || '' });
             } else {
               const existing = groups.find(x=>x.id===g.id);
-              if(existing) existing.name = g.name;
+              if(existing){ existing.name = g.name; if(g.year!==undefined) existing.year = g.year || ''; }
             }
             const worksForSave = (g.works||[]).map(w=>({ id:w.id, title:w.title, presenter:w.presenter, regionalScore: w.regionalScore!=null?w.regionalScore:null }));
             await saveWorksFor(g.id, worksForSave);
@@ -2633,12 +2669,36 @@ async function renderHomeSystemTab(){
 
 async function renderGroupsList(){
   const wrap = document.getElementById('groupsListWrap');
+  const yearFilterEl = document.getElementById('groupsYearFilter');
   if(groups.length===0){
     wrap.innerHTML = `<div class="empty">ยังไม่มีกลุ่มการประเมิน เพิ่มกลุ่มแรกด้านบน</div>`;
     return;
   }
-  wrap.innerHTML = groups.map(g=>`<div class="group-card" id="grow-${g.id}"></div>`).join('');
-  const results = await Promise.all(groups.map(async g => {
+  if(yearFilterEl){
+    const prevSelected = yearFilterEl.value || '__all__';
+    const years = [...new Set(groups.map(g=>g.year).filter(y=>y))].sort((a,b)=>b.localeCompare(a));
+    const hasUnset = groups.some(g=>!g.year);
+    yearFilterEl.innerHTML = `
+      <option value="__all__">ทั้งหมด</option>
+      ${years.map(y=>`<option value="${escapeHtml(y)}">ปี ${escapeHtml(y)}</option>`).join('')}
+      ${hasUnset ? `<option value="__unset__">ไม่ระบุปี</option>` : ''}
+    `;
+    const stillValid = [...yearFilterEl.options].some(o=>o.value===prevSelected);
+    yearFilterEl.value = stillValid ? prevSelected : '__all__';
+    yearFilterEl.onchange = renderGroupsList;
+  }
+  const selectedYear = yearFilterEl ? yearFilterEl.value : '__all__';
+  const filteredGroups = groups.filter(g=>{
+    if(selectedYear==='__all__') return true;
+    if(selectedYear==='__unset__') return !g.year;
+    return g.year === selectedYear;
+  });
+  if(filteredGroups.length===0){
+    wrap.innerHTML = `<div class="empty">ไม่มีกลุ่มที่ตรงกับตัวกรองปีนี้</div>`;
+    return;
+  }
+  wrap.innerHTML = filteredGroups.map(g=>`<div class="group-card" id="grow-${g.id}"></div>`).join('');
+  const results = await Promise.all(filteredGroups.map(async g => {
     const [jn, w] = await Promise.all([loadJudgeNamesFor(g.id), loadWorksFor(g.id)]);
     return { g, jn, w };
   }));
@@ -2651,14 +2711,15 @@ async function renderGroupsList(){
 function renderGroupRow(g, workCount, namedCount){
   const row = document.getElementById(`grow-${g.id}`);
   if(!row) return;
+  const yearLabel = g.year ? `ปี ${escapeHtml(g.year)}` : 'ไม่ระบุปี';
   row.innerHTML = `
     <div class="gc-info">
-      <strong>${escapeHtml(g.name)}</strong>
+      <strong>${escapeHtml(g.name)}</strong> <span class="badge ${g.year ? 'badge-done' : 'badge-pending'}" style="font-size:11px;">${yearLabel}</span>
       <div class="gc-meta">ผลงาน ${workCount} เรื่อง · ตั้งชื่อกรรมการแล้ว ${namedCount}/3</div>
     </div>
     <div class="gc-actions">
       <button class="btn btn-primary" data-open="${g.id}">เข้าใช้งานกลุ่มนี้</button>
-      <button class="btn btn-outline" data-edit="${g.id}">แก้ไขชื่อ</button>
+      <button class="btn btn-outline" data-edit="${g.id}">แก้ไขชื่อ/ปี</button>
       <button class="btn btn-ghost" data-del="${g.id}">ลบกลุ่ม</button>
     </div>
   `;
@@ -2695,9 +2756,15 @@ function renderGroupRowEdit(g, workCount, namedCount){
   const row = document.getElementById(`grow-${g.id}`);
   if(!row) return;
   row.innerHTML = `
-    <div class="gc-info" style="flex:1;min-width:220px;">
-      <label class="field-label" style="margin-bottom:6px;">ชื่อกลุ่ม</label>
-      <input type="text" id="editGroupName-${g.id}" value="${escapeHtml(g.name)}">
+    <div class="gc-info" style="flex:1;min-width:220px;display:flex;gap:10px;flex-wrap:wrap;">
+      <div>
+        <label class="field-label" style="margin-bottom:6px;">ชื่อกลุ่ม</label>
+        <input type="text" id="editGroupName-${g.id}" value="${escapeHtml(g.name)}">
+      </div>
+      <div>
+        <label class="field-label" style="margin-bottom:6px;">ปี (พ.ศ.)</label>
+        <input type="text" id="editGroupYear-${g.id}" value="${escapeHtml(g.year||'')}" placeholder="เช่น 2569" inputmode="numeric" style="width:100px;">
+      </div>
     </div>
     <div class="gc-actions">
       <button class="btn btn-primary" data-savename="${g.id}">บันทึก</button>
@@ -2705,15 +2772,17 @@ function renderGroupRowEdit(g, workCount, namedCount){
     </div>
   `;
   const input = document.getElementById(`editGroupName-${g.id}`);
+  const yearInput = document.getElementById(`editGroupYear-${g.id}`);
   input.focus();
   input.select();
   row.querySelector(`button[data-savename="${g.id}"]`).onclick = async ()=>{
     const newName = input.value.trim();
+    const newYear = yearInput.value.trim();
     if(!newName){ input.focus(); return; }
     const found = groups.find(x=>x.id===g.id);
-    if(found) found.name = newName;
+    if(found){ found.name = newName; found.year = newYear; }
     await saveGroups();
-    renderGroupRow({ ...g, name:newName }, workCount, namedCount);
+    renderGroupRow({ ...g, name:newName, year:newYear }, workCount, namedCount);
   };
   row.querySelector(`button[data-cancel="${g.id}"]`).onclick = ()=>{
     renderGroupRow(g, workCount, namedCount);
@@ -3025,16 +3094,44 @@ async function renderPullFromRegionalPanel(){
     return;
   }
 
+  // ตัวกรองปี — สำคัญเพราะชื่อกลุ่มภูมิภาคอาจซ้ำกันข้ามปี (เช่น "กลุ่มภาษาไทย" ของปี 2568 และ 2569
+  // เป็นคนละกลุ่มกัน) ป้ายปีกำกับชื่อในตัวเลือกช่วยกันแอดมินดึงผิดปีโดยไม่ตั้งใจ
+  const years = [...new Set(eligibleGroups.map(g=>g.year).filter(y=>y))].sort((a,b)=>b.localeCompare(a));
+  const hasUnset = eligibleGroups.some(g=>!g.year);
+
   wrap.innerHTML = `
     <h2>ดึงผลงานจากภูมิภาค</h2>
+    <label class="field-label">กรองตามปี</label>
+    <select id="pullYearFilter" style="max-width:220px;margin-bottom:12px;">
+      <option value="__all__">ทั้งหมด</option>
+      ${years.map(y=>`<option value="${escapeHtml(y)}">ปี ${escapeHtml(y)}</option>`).join('')}
+      ${hasUnset ? `<option value="__unset__">ไม่ระบุปี</option>` : ''}
+    </select>
     <label class="field-label">เลือกกลุ่มภูมิภาคต้นทาง</label>
     <select id="pullRegionalGroupSelect">
       <option value="">— เลือกกลุ่ม —</option>
-      ${eligibleGroups.map(g=>`<option value="${g.id}">${escapeHtml(g.name)} (รับรองแล้ว ${g.signedCount}/3)</option>`).join('')}
     </select>
     <div id="pullWorksListWrap" style="margin-top:14px;"></div>
   `;
-  document.getElementById('pullRegionalGroupSelect').onchange = async (e)=>{
+
+  const groupSelect = document.getElementById('pullRegionalGroupSelect');
+  const populateGroupOptions = ()=>{
+    const yearFilter = document.getElementById('pullYearFilter').value;
+    const filtered = eligibleGroups.filter(g=>{
+      if(yearFilter==='__all__') return true;
+      if(yearFilter==='__unset__') return !g.year;
+      return g.year === yearFilter;
+    });
+    groupSelect.innerHTML = `
+      <option value="">— เลือกกลุ่ม —</option>
+      ${filtered.map(g=>`<option value="${g.id}">${escapeHtml(g.name)} (${g.year ? 'ปี '+escapeHtml(g.year) : 'ไม่ระบุปี'} · รับรองแล้ว ${g.signedCount}/3)</option>`).join('')}
+    `;
+    document.getElementById('pullWorksListWrap').innerHTML = '';
+  };
+  document.getElementById('pullYearFilter').onchange = populateGroupOptions;
+  populateGroupOptions();
+
+  groupSelect.onchange = async (e)=>{
     const gid = e.target.value;
     const listWrap = document.getElementById('pullWorksListWrap');
     if(!gid){ listWrap.innerHTML = ''; return; }
@@ -3787,11 +3884,16 @@ function ensureXlsxLoaded(){
   return xlsxLoadPromise;
 }
 
-async function computeAllGroupsReportData(){
+async function computeAllGroupsReportData(yearFilter){
   // จงใจให้ "กลุ่ม" เรียงคิว (ไม่ Promise.all ข้ามกลุ่ม) แต่ "ผลงานภายในกลุ่ม" ขนานกัน —
   // รูปแบบเดียวกับฟีเจอร์ backup ข้อมูล เพื่อไม่ให้ยิง request พร้อมกันเป็นพันครั้งรวดเดียว
+  const targetGroups = groups.filter(g=>{
+    if(!yearFilter || yearFilter==='__all__') return true;
+    if(yearFilter==='__unset__') return !g.year;
+    return g.year === yearFilter;
+  });
   const allGroupRows = [];
-  for(const g of groups){
+  for(const g of targetGroups){
     const works = await loadWorksFor(g.id);
     const scoresByWork = await loadAllScoresForWorks(works);
     const rows = works.map(w=>{
@@ -3822,15 +3924,40 @@ function applyTwoDecimalFormat(ws, colIndexes, rowCount){
   }
 }
 
-async function exportAllGroupsExcel(){
-  const tile = document.getElementById('goExportExcel');
-  const titleEl = tile ? tile.querySelector('h3') : null;
-  const originalTitle = titleEl ? titleEl.textContent : null;
-  if(tile){ tile.style.pointerEvents = 'none'; tile.style.opacity = '0.6'; }
-  if(titleEl) titleEl.textContent = 'กำลังรวบรวมข้อมูล...';
+function renderExportExcelPanel(){
+  const panel = document.getElementById('exportExcelPanel');
+  const years = [...new Set(groups.map(g=>g.year).filter(y=>y))].sort((a,b)=>b.localeCompare(a));
+  const hasUnset = groups.some(g=>!g.year);
+  panel.innerHTML = `
+    <h2>ส่งออก Excel ภาพรวมทั้งระบบ</h2>
+    <label class="field-label">เลือกปีที่ต้องการส่งออก</label>
+    <select id="exportExcelYearSelect" style="max-width:220px;">
+      <option value="__all__">ทั้งหมด (ทุกปี)</option>
+      ${years.map(y=>`<option value="${escapeHtml(y)}">ปี ${escapeHtml(y)}</option>`).join('')}
+      ${hasUnset ? `<option value="__unset__">ไม่ระบุปี</option>` : ''}
+    </select>
+    <div style="margin-top:14px;">
+      <button class="btn btn-gold" id="confirmExportExcelBtn">ส่งออก</button>
+    </div>
+  `;
+  document.getElementById('confirmExportExcelBtn').onclick = ()=>{
+    const yearFilter = document.getElementById('exportExcelYearSelect').value;
+    exportAllGroupsExcel(yearFilter);
+  };
+}
+
+async function exportAllGroupsExcel(yearFilter){
+  const btn = document.getElementById('confirmExportExcelBtn');
+  const original = btn ? btn.textContent : null;
+  if(btn){ btn.disabled = true; btn.textContent = 'กำลังรวบรวมข้อมูล...'; }
   try{
     await ensureXlsxLoaded();
-    const allGroupRows = await computeAllGroupsReportData();
+    const allGroupRows = await computeAllGroupsReportData(yearFilter);
+    if(allGroupRows.length===0){
+      alert('ไม่มีกลุ่มที่ตรงกับปีที่เลือก');
+      if(btn){ btn.disabled = false; btn.textContent = original; }
+      return;
+    }
 
     const summaryAoa = [['กลุ่ม','ลำดับที่','รหัสผลงาน','ชื่อผู้วิจัย','ชื่อผลงานวิจัย','คะแนนภูมิภาค','คะแนนการนำเสนอ','รวมคะแนน','ผลการประเมิน']];
     const detailAoa = [['กลุ่ม','รหัสผลงาน','ชื่อผลงานวิจัย','ตัวบ่งชี้','น้ำหนัก','กรรมการ 1','กรรมการ 2','กรรมการ 3','ฐานนิยม','คะแนน']];
@@ -3891,13 +4018,12 @@ async function exportAllGroupsExcel(){
     applyTwoDecimalFormat(wsDetail, [4,9], detailAoa.length);
     XLSX.utils.book_append_sheet(wb, wsDetail, 'รายละเอียดคะแนน');
 
-    const yearPart = evalYear ? `-${evalYear}` : '';
+    const yearPart = (yearFilter==='__unset__') ? '-ไม่ระบุปี' : (yearFilter && yearFilter!=='__all__') ? `-${yearFilter}` : '-ทุกปี';
     XLSX.writeFile(wb, `สรุปผลประเมินประเทศทุกกลุ่ม${yearPart}.xlsx`.replace(/[\\\/:*?"<>|]/g,''));
   }catch(err){
     alert('ส่งออกไฟล์ Excel ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง');
   }
-  if(tile){ tile.style.pointerEvents = ''; tile.style.opacity = ''; }
-  if(titleEl && originalTitle) titleEl.textContent = originalTitle;
+  if(btn){ btn.disabled = false; btn.textContent = original; }
 }
 
 async function computeNationalReportRows(){
@@ -3932,9 +4058,11 @@ async function generatePdfReportPart1(){
 
   const { rows, freshSignatures, freshCertifyApproved } = await computeNationalReportRows();
   const dateStr = new Date().toLocaleDateString('th-TH', { year:'numeric', month:'long', day:'numeric' });
+  const ctxGroupObj = groups.find(g=>g.id===ctxGroupId);
+  const reportYear = (ctxGroupObj && ctxGroupObj.year) || evalYear || '2569';
 
   let html = `<div class="report-page-flow">
-    <h1 class="report-title">รายงานผลการประเมินผลงานวิจัยภาคบรรยาย ระดับประเทศ ประจำปี ${evalYear ? escapeHtml(evalYear) : '2569'}</h1>
+    <h1 class="report-title">รายงานผลการประเมินผลงานวิจัยภาคบรรยาย ระดับประเทศ ประจำปี ${escapeHtml(reportYear)}</h1>
     <p class="report-meta">กลุ่ม: ${escapeHtml(ctxGroupName)} &nbsp;·&nbsp; ส่วนที่ 1: ตารางจัดอันดับคะแนน &nbsp;·&nbsp; ออกรายงานวันที่ ${dateStr}</p>
     <table class="report-table main-summary-table">
       <colgroup>
