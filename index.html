@@ -3518,6 +3518,16 @@ async function computeAllGroupsReportData(){
   return allGroupRows;
 }
 
+function applyTwoDecimalFormat(ws, colIndexes, rowCount){
+  for(let r=1; r<rowCount; r++){
+    colIndexes.forEach(c=>{
+      const ref = XLSX.utils.encode_cell({ r, c });
+      const cell = ws[ref];
+      if(cell && typeof cell.v === 'number') cell.z = '0.00';
+    });
+  }
+}
+
 async function exportAllGroupsExcel(){
   const tile = document.getElementById('goExportExcel');
   const titleEl = tile ? tile.querySelector('h3') : null;
@@ -3530,6 +3540,7 @@ async function exportAllGroupsExcel(){
 
     const summaryAoa = [['กลุ่ม','ลำดับที่','รหัสผลงาน','ชื่อผู้วิจัย','ชื่อผลงานวิจัย','คะแนนภูมิภาค','คะแนนการนำเสนอ','รวมคะแนน','ผลการประเมิน']];
     const detailAoa = [['กลุ่ม','รหัสผลงาน','ชื่อผลงานวิจัย','ตัวบ่งชี้','น้ำหนัก','กรรมการ 1','กรรมการ 2','กรรมการ 3','ฐานนิยม','คะแนน']];
+    const detailMerges = [];
 
     allGroupRows.forEach(({ group, rows })=>{
       rows.forEach((r, i)=>{
@@ -3544,26 +3555,48 @@ async function exportAllGroupsExcel(){
           r.nationalTotal!==null ? r.nationalTotal : '',
           r.grade || ''
         ]);
-        r.result.indicators.forEach(ind=>{
-          detailAoa.push([
-            group.name,
-            r.work.title,
-            r.work.researchName || '',
-            `${ind.id} ${ind.name}`,
-            ind.weight,
-            ind.judgeLevels[0]!=null ? ind.judgeLevels[0] : '',
-            ind.judgeLevels[1]!=null ? ind.judgeLevels[1] : '',
-            ind.judgeLevels[2]!=null ? ind.judgeLevels[2] : '',
-            ind.mode!=null ? ind.mode : '',
-            ind.score!=null ? ind.score : ''
-          ]);
+        // จัดกลุ่มตามหมวด (RUBRIC dimension) แบบเดียวกับรายงาน PDF ส่วนที่ 2 —
+        // "น้ำหนัก" และ "คะแนน" (ผลรวมของหมวด) รวมเป็นเซลล์เดียวคร่อมทุกตัวบ่งชี้ในหมวดนั้น
+        // แทนที่จะแสดงคะแนนรายตัวบ่งชี้ ให้ตรงกับที่ PDF แสดงจริง
+        RUBRIC.forEach(dim=>{
+          const dimIndicators = r.result.indicators.filter(ind=>ind.dimName===dim.name);
+          const dimResolved = dimIndicators.every(ind=>ind.score!==null);
+          const dimConflict = dimIndicators.some(ind=>ind.conflict);
+          const dimScoreTotal = dimResolved ? dimIndicators.reduce((s,ind)=>s+ind.score,0) : null;
+          const startRow = detailAoa.length;
+          dimIndicators.forEach((ind, idx)=>{
+            detailAoa.push([
+              group.name,
+              r.work.title,
+              r.work.researchName || '',
+              `${ind.id} ${ind.name}`,
+              idx===0 ? dim.weight : '',
+              ind.judgeLevels[0]!=null ? ind.judgeLevels[0] : '',
+              ind.judgeLevels[1]!=null ? ind.judgeLevels[1] : '',
+              ind.judgeLevels[2]!=null ? ind.judgeLevels[2] : '',
+              ind.mode!=null ? ind.mode : '',
+              idx===0 ? (dimScoreTotal!==null ? dimScoreTotal : (dimConflict ? 'ต้องหารือ' : '')) : ''
+            ]);
+          });
+          const endRow = detailAoa.length - 1;
+          if(endRow > startRow){
+            detailMerges.push({ s:{ r:startRow, c:4 }, e:{ r:endRow, c:4 } }); // น้ำหนัก
+            detailMerges.push({ s:{ r:startRow, c:9 }, e:{ r:endRow, c:9 } }); // คะแนน
+          }
         });
       });
     });
 
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryAoa), 'สรุปคะแนน');
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(detailAoa), 'รายละเอียดคะแนน');
+    const wsSummary = XLSX.utils.aoa_to_sheet(summaryAoa);
+    applyTwoDecimalFormat(wsSummary, [5,6,7], summaryAoa.length);
+    XLSX.utils.book_append_sheet(wb, wsSummary, 'สรุปคะแนน');
+
+    const wsDetail = XLSX.utils.aoa_to_sheet(detailAoa);
+    wsDetail['!merges'] = detailMerges;
+    applyTwoDecimalFormat(wsDetail, [4,9], detailAoa.length);
+    XLSX.utils.book_append_sheet(wb, wsDetail, 'รายละเอียดคะแนน');
+
     const yearPart = evalYear ? `-${evalYear}` : '';
     XLSX.writeFile(wb, `สรุปผลประเมินประเทศทุกกลุ่ม${yearPart}.xlsx`.replace(/[\\\/:*?"<>|]/g,''));
   }catch(err){
