@@ -1498,11 +1498,13 @@ function nationalGrade(score){
 async function enterGroup(groupId, groupName){
   ctxGroupId = groupId;
   ctxGroupName = groupName;
-  ctxJudgeNames = await loadJudgeNamesFor(groupId);
-  ctxJudgePins = await loadJudgePinsFor(groupId);
-  ctxJudgeSignatures = await loadJudgeSignaturesFor(groupId);
-  ctxCertifyApproved = await loadCertifyApprovedFor(groupId);
-  ctxWorks = await loadWorksFor(groupId);
+  [ctxJudgeNames, ctxJudgePins, ctxJudgeSignatures, ctxCertifyApproved, ctxWorks] = await Promise.all([
+    loadJudgeNamesFor(groupId),
+    loadJudgePinsFor(groupId),
+    loadJudgeSignaturesFor(groupId),
+    loadCertifyApprovedFor(groupId),
+    loadWorksFor(groupId)
+  ]);
   scoreWorkId = null;
   scoreLevels = {};
   openDetailWorkId = null;
